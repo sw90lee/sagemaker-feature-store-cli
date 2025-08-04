@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError
 from ..config import Config
 from ..utils.file_handler import FileHandler
+from .bulk_get_cmd import get_single_record
 
 
 def put_single_record(config: Config, feature_group_name: str, record_data: Dict[str, Any], 
@@ -155,7 +156,74 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str, o
             raise click.Abort()
         
         # Save results to output file if specified
-        if output_file:
+        if output_file and successful_records:
+            try:
+                click.echo("성공한 레코드들을 다시 조회하여 결과를 저장 중...")
+                
+                # Extract record IDs from successful records
+                record_ids = [r.get('record_id') for r in successful_records if r.get('record_id')]
+                
+                if record_ids:
+                    # Retrieve the actual data for successful records
+                    retrieved_records = []
+                    max_workers = min(10, len(record_ids))
+                    
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        future_to_record_id = {
+                            executor.submit(get_single_record, config, feature_group_name, 
+                                           record_id, None): record_id 
+                            for record_id in record_ids
+                        }
+                        
+                        completed = 0
+                        for future in as_completed(future_to_record_id):
+                            result = future.result()
+                            if 'error' not in result:
+                                retrieved_records.append(result)
+                            completed += 1
+                            
+                            if completed % 5 == 0 or completed == len(record_ids):
+                                click.echo(f"조회 완료: {completed}/{len(record_ids)}")
+                    
+                    # Create comprehensive result
+                    result_data = {
+                        'summary': {
+                            'feature_group_name': feature_group_name,
+                            'input_file': input_file,
+                            'total_records': len(valid_records),
+                            'successful_records': len(successful_records),
+                            'failed_records': len(error_records),
+                            'retrieved_records': len(retrieved_records)
+                        },
+                        'data': retrieved_records,
+                        'put_results': {
+                            'success_details': successful_records,
+                            'error_details': error_records
+                        }
+                    }
+                    
+                    FileHandler.write_file([result_data], output_file)
+                    click.echo(f"결과가 '{output_file}'에 저장되었습니다")
+                    click.echo(f"저장된 {len(retrieved_records)}개 레코드의 실제 데이터가 포함되어 있습니다")
+                else:
+                    # Fallback to summary only
+                    result_summary = {
+                        'feature_group_name': feature_group_name,
+                        'input_file': input_file,
+                        'total_records': len(valid_records),
+                        'successful_records': len(successful_records),
+                        'failed_records': len(error_records),
+                        'success_details': successful_records,
+                        'error_details': error_records
+                    }
+                    
+                    FileHandler.write_file([result_summary], output_file)
+                    click.echo(f"결과가 '{output_file}'에 저장되었습니다")
+                
+            except Exception as e:
+                click.echo(f"출력 파일 쓰기 오류: {e}", err=True)
+        elif output_file:
+            # No successful records, save summary only
             try:
                 result_summary = {
                     'feature_group_name': feature_group_name,
