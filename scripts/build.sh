@@ -25,7 +25,7 @@ pip install -r requirements.txt
 
 # Build executable
 echo "Building executable..."
-pyinstaller --onefile --name fs --console --clean src/sagemaker_fs_cli/__main__.py
+pyinstaller --onefile --name fs --console --clean src/sagemaker_fs_cli/main.py
 
 # Rename executable with platform info
 PLATFORM=$(uname -s | tr '[:upper:]' '[:lower:]')

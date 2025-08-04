@@ -59,7 +59,7 @@ def build_executable():
         "--name", "fs",
         "--console",
         "--clean",
-        "src/sagemaker_fs_cli/__main__.py"
+        "src/sagemaker_fs_cli/main.py"
     ]
     
     run_command(build_cmd, "Building executable with PyInstaller")

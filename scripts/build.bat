@@ -57,7 +57,7 @@ if %ERRORLEVEL% neq 0 (
 
 REM Build executable
 echo Building executable...
-pyinstaller --onefile --name fs --console --clean src\sagemaker_fs_cli\__main__.py
+pyinstaller --onefile --name fs --console --clean src\sagemaker_fs_cli\main.py
 if %ERRORLEVEL% neq 0 (
     echo Error: Failed to build executable
     pause
