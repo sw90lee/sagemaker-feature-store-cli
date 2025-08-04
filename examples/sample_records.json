@@ -1,0 +1,23 @@
+[
+  {
+    "record_id": "customer_001",
+    "age": 25,
+    "income": 50000,
+    "location": "Seoul",
+    "EventTime": "1640995200"
+  },
+  {
+    "record_id": "customer_002",
+    "age": 35,
+    "income": 75000,
+    "location": "Busan",
+    "EventTime": "1640995260"
+  },
+  {
+    "record_id": "customer_003",
+    "age": 28,
+    "income": 65000,
+    "location": "Incheon",
+    "EventTime": "1640995320"
+  }
+]

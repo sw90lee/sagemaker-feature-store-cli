@@ -1,0 +1,4 @@
+record_id,age,income,location,EventTime
+customer_001,25,50000,Seoul,1640995200
+customer_002,35,75000,Busan,1640995260
+customer_003,28,65000,Incheon,1640995320
