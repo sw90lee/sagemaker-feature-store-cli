@@ -56,13 +56,14 @@ def put_record(ctx, feature_group_name: str, record: str):
 @click.argument('input_file')
 @click.option('--output-file', '-o', help='출력 파일 경로')
 @click.option('--feature-names', help='조회할 피처 이름들 (쉼표로 구분)')
+@click.option('--current-time', '-c', is_flag=True, help='조회된 결과의 Time 필드를 현재 시간으로 교체')
 @click.pass_context
 def bulk_get_records(ctx, feature_group_name: str, input_file: str, 
-                    output_file: Optional[str], feature_names: Optional[str]):
+                    output_file: Optional[str], feature_names: Optional[str], current_time: bool):
     """입력 파일(JSON/CSV)을 사용하여 피처 그룹에서 대량 레코드 조회"""
     config = ctx.obj['config']
     feature_list = feature_names.split(',') if feature_names else None
-    bulk_get_cmd.bulk_get_records(config, feature_group_name, input_file, output_file, feature_list)
+    bulk_get_cmd.bulk_get_records(config, feature_group_name, input_file, output_file, feature_list, current_time)
 
 
 @cli.command('bulk-put')

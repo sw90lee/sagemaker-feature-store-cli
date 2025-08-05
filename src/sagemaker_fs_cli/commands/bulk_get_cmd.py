@@ -2,6 +2,8 @@
 
 import click
 import os
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError
@@ -42,8 +44,22 @@ def get_single_record(config: Config, feature_group_name: str, record_id: str,
         return {'record_id': record_id, 'error': f'Unexpected error: {str(e)}'}
 
 
+def replace_time_field_with_current(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Replace Time field with current timestamp in KST (Asia/Seoul) timezone"""
+    # Get current time in KST (Asia/Seoul)
+    kst_timezone = ZoneInfo("Asia/Seoul")
+    current_timestamp = datetime.now(kst_timezone).strftime('%Y-%m-%dT%H:%M:%SZ')
+    
+    for record in records:
+        if 'Time' in record:
+            record['Time'] = current_timestamp
+    
+    return records
+
+
 def bulk_get_records(config: Config, feature_group_name: str, input_file: str, 
-                    output_file: Optional[str], feature_names: Optional[List[str]]) -> None:
+                    output_file: Optional[str], feature_names: Optional[List[str]], 
+                    current_time: bool = False) -> None:
     """Bulk get records from feature group using input file"""
     try:
         # Validate input file exists
@@ -126,6 +142,10 @@ def bulk_get_records(config: Config, feature_group_name: str, input_file: str,
         if not successful_records:
             click.echo("성공적으로 조회된 레코드가 없습니다", err=True)
             raise click.Abort()
+        
+        # Replace Time field with current timestamp if requested
+        if current_time:
+            successful_records = replace_time_field_with_current(successful_records)
         
         # Output results
         if output_file:

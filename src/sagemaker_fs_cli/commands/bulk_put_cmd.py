@@ -157,17 +157,38 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str, o
         # Save results to output file if specified
         if output_file:
             try:
-                result_summary = {
-                    'feature_group_name': feature_group_name,
-                    'input_file': input_file,
-                    'total_records': len(valid_records),
-                    'successful_records': len(successful_records),
-                    'failed_records': len(error_records),
-                    'success_details': successful_records,
-                    'error_details': error_records
+                # Get successful input records for bulk-get style output
+                successful_input_records = []
+                for result in results:
+                    if result.get('status') == 'success':
+                        # Find the original input record that corresponds to this successful result
+                        record_id = result.get('record_id')
+                        for input_record in valid_records:
+                            # Match by record_id or first available identifier
+                            input_record_id = (input_record.get('record_id') or 
+                                             input_record.get('id') or 
+                                             input_record.get('RecordIdentifier') or 
+                                             str(next(iter(input_record.values()))) if input_record else None)
+                            
+                            if str(input_record_id) == record_id:
+                                successful_input_records.append(input_record)
+                                break
+                
+                # Create comprehensive result with both summary and data
+                result_output = {
+                    'summary': {
+                        'feature_group_name': feature_group_name,
+                        'input_file': input_file,
+                        'total_records': len(valid_records),
+                        'successful_records': len(successful_records),
+                        'failed_records': len(error_records),
+                        'success_details': successful_records,
+                        'error_details': error_records
+                    },
+                    'data': successful_input_records
                 }
                 
-                FileHandler.write_file([result_summary], output_file)
+                FileHandler.write_file([result_output], output_file)
                 click.echo(f"결과가 '{output_file}'에 저장되었습니다")
                 
             except Exception as e:

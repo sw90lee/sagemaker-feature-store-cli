@@ -23,12 +23,42 @@ def list_feature_groups(config: Config, output_format: str) -> None:
                     
                     # Only include feature groups with online store enabled
                     if fg_details.get('OnlineStoreConfig'):
+                        online_config = fg_details.get('OnlineStoreConfig', {})
+                        offline_config = fg_details.get('OfflineStoreConfig', {})
+                        
+                        # Extract detailed online store information
+                        storage_type = online_config.get('StorageType', 'Standard')
+                        ttl_duration = online_config.get('TtlDuration')
+                        if ttl_duration:
+                            ttl_value = f"{ttl_duration.get('Value', 'N/A')} {ttl_duration.get('Unit', '')}"
+                        else:
+                            ttl_value = 'N/A'
+                        
+                        # Extract offline store information
+                        offline_s3_uri = offline_config.get('S3StorageConfig', {}).get('S3Uri', 'Not configured') if offline_config else 'Not configured'
+                        offline_table_format = offline_config.get('TableFormat', 'Unknown') if offline_config else 'N/A'
+                        
+                        # Determine ingest mode based on store configuration
+                        ingest_mode = []
+                        if online_config:
+                            ingest_mode.append('Online')
+                        if offline_config:
+                            ingest_mode.append('Offline')
+                        ingest_mode_str = ' + '.join(ingest_mode) if ingest_mode else 'Unknown'
+                        
                         feature_groups.append({
                             'FeatureGroupName': fg['FeatureGroupName'],
                             'FeatureGroupStatus': fg['FeatureGroupStatus'],
-                            'OnlineStoreConfig': fg_details.get('OnlineStoreConfig'),
+                            'IngestMode': ingest_mode_str,
+                            'StorageType': storage_type,
+                            'TTLValue': ttl_value,
+                            'EventTimeFeatureName': fg_details.get('EventTimeFeatureName', 'N/A'),
+                            'RecordIdentifierFeatureName': fg_details.get('RecordIdentifierFeatureName', 'N/A'),
                             'CreationTime': fg['CreationTime'].strftime('%Y-%m-%d %H:%M:%S') if fg.get('CreationTime') else '',
-                            'OfflineStoreConfig': fg_details.get('OfflineStoreConfig', {}).get('S3StorageConfig', {}).get('S3Uri', 'Not configured') if fg_details.get('OfflineStoreConfig') else 'Not configured'
+                            'OfflineS3Uri': offline_s3_uri,
+                            'TableFormat': offline_table_format,
+                            'OnlineStoreConfig': online_config,
+                            'OfflineStoreConfig': offline_config
                         })
                 except ClientError as e:
                     click.echo(f"경고: 피처 그룹 {fg['FeatureGroupName']} 정보를 가져올 수 없습니다: {e}", err=True)

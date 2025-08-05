@@ -29,15 +29,30 @@ class OutputFormatter:
     
     @staticmethod
     def format_feature_groups(feature_groups: List[Dict[str, Any]]) -> str:
-        """Format feature groups list"""
-        headers = ['FeatureGroupName', 'FeatureGroupStatus', 'OnlineStoreConfig', 'CreationTime']
+        """Format feature groups list with detailed information"""
+        headers = [
+            'FeatureGroupName', 
+            'Status', 
+            'IngestMode',
+            'StorageType',
+            'TTL',
+            'EventTimeFeature',
+            'RecordIdFeature',
+            'TableFormat',
+            'CreationTime'
+        ]
         formatted_data = []
         
         for fg in feature_groups:
             formatted_data.append({
                 'FeatureGroupName': fg.get('FeatureGroupName', ''),
-                'FeatureGroupStatus': fg.get('FeatureGroupStatus', ''),
-                'OnlineStoreConfig': '활성화됨' if fg.get('OnlineStoreConfig') else '비활성화됨',
+                'Status': fg.get('FeatureGroupStatus', ''),
+                'IngestMode': fg.get('IngestMode', 'Unknown'),
+                'StorageType': fg.get('StorageType', 'Standard'),
+                'TTL': fg.get('TTLValue', 'N/A'),
+                'EventTimeFeature': fg.get('EventTimeFeatureName', 'N/A'),
+                'RecordIdFeature': fg.get('RecordIdentifierFeatureName', 'N/A'),
+                'TableFormat': fg.get('TableFormat', 'N/A'),
                 'CreationTime': fg.get('CreationTime', '')
             })
         
