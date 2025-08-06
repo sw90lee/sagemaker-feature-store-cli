@@ -3,7 +3,7 @@
 import click
 from typing import Optional
 from .config import Config
-from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd
+from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd
 
 
 @click.group()
@@ -213,6 +213,11 @@ def migrate_feature_group(ctx, source_feature_group: str, target_feature_group: 
         max_workers=max_workers, dry_run=dry_run, 
         filter_query=filter_query
     )
+
+
+# create, delete 명령어 등록
+cli.add_command(create_cmd.create)
+cli.add_command(delete_cmd.delete)
 
 
 if __name__ == '__main__':
