@@ -23,7 +23,8 @@ def cli(ctx, profile: Optional[str], region: Optional[str]):
 def list_feature_groups(ctx, output_format: str):
     """모든 피처 그룹 목록 조회 (온라인/오프라인)
     
-    예제:
+    \b
+    예시:
       # 테이블 형태로 출력
       fs list
       
@@ -45,15 +46,17 @@ def get_record(ctx, feature_group_name: str, record_identifier_value: str,
                feature_names: Optional[str], output_format: str):
     """피처 그룹에서 단일 레코드 조회
     
-    예제:
+    \b
+    예시:
       # 기본 조회
       fs get my-feature-group record-id-123
       
       # 특정 피처만 조회
-      fs get my-feature-group record-id-123 --feature-names "feature1,feature2,feature3"
+      fs get my-feature-group record-id-123 \\
+        --feature-names "feature1,feature2,feature3"
       
-      # JSON 형태로 출력
-      fs get my-feature-group record-id-123 --output-format json
+      # 테이블 형태로 출력
+      fs get my-feature-group record-id-123 --output-format table
     """
     config = ctx.obj['config']
     feature_list = feature_names.split(',') if feature_names else None
@@ -67,8 +70,11 @@ def get_record(ctx, feature_group_name: str, record_identifier_value: str,
 def put_record(ctx, feature_group_name: str, record: str):
     """피처 그룹에 단일 레코드 저장
     
-    예제:
-      fs put my-feature-group --record '{"feature1": "value1", "feature2": "value2", "record_id": "123"}'
+    \b
+    예시:
+      # 단일 레코드 저장
+      fs put my-feature-group \\
+        --record '{"feature1": "value1", "feature2": "value2", "record_id": "123"}'
     """
     config = ctx.obj['config']
     put_cmd.put_record(config, feature_group_name, record)
@@ -85,18 +91,22 @@ def bulk_get_records(ctx, feature_group_name: str, input_file: str,
                     output_file: Optional[str], feature_names: Optional[str], current_time: bool):
     """입력 파일(JSON/CSV)을 사용하여 피처 그룹에서 대량 레코드 조회
     
-    예제:
+    \b
+    예시:
       # JSON 파일에서 레코드 ID 목록을 읽어 조회
       fs bulk-get my-feature-group input_ids.json
       
       # 결과를 파일로 저장
-      fs bulk-get my-feature-group input_ids.json --output-file results.json
+      fs bulk-get my-feature-group input_ids.json \\
+        --output-file results.json
       
       # CSV 파일 사용
-      fs bulk-get my-feature-group input_ids.csv --output-file results.csv
+      fs bulk-get my-feature-group input_ids.csv \\
+        --output-file results.csv
       
       # 특정 피처만 조회
-      fs bulk-get my-feature-group input_ids.json --feature-names "feature1,feature2"
+      fs bulk-get my-feature-group input_ids.json \\
+        --feature-names "feature1,feature2"
       
       # 현재 시간으로 Time 필드 교체
       fs bulk-get my-feature-group input_ids.json --current-time
@@ -114,7 +124,8 @@ def bulk_get_records(ctx, feature_group_name: str, input_file: str,
 def bulk_put_records(ctx, feature_group_name: str, input_file: str, output_file: Optional[str]):
     """입력 파일(JSON/CSV)을 사용하여 피처 그룹에 대량 레코드 저장
     
-    예제:
+    \b
+    예시:
       # JSON 파일에서 레코드들을 읽어 업데이트
       fs bulk-put my-feature-group records.json
       
@@ -122,7 +133,8 @@ def bulk_put_records(ctx, feature_group_name: str, input_file: str, output_file:
       fs bulk-put my-feature-group records.csv
       
       # 결과 로그를 파일로 저장
-      fs bulk-put my-feature-group records.json --output-file logs.txt
+      fs bulk-put my-feature-group records.json \\
+        --output-file logs.txt
     """
     config = ctx.obj['config']
     bulk_put_cmd.bulk_put_records(config, feature_group_name, input_file, output_file)
@@ -140,7 +152,8 @@ def clear_feature_group(ctx, feature_group_name: str, online_only: bool, offline
                        force: bool, backup_s3: Optional[str], dry_run: bool):
     """피처 그룹의 모든 데이터 삭제
     
-    예제:
+    \b
+    예시:
       # 모든 데이터 삭제 (확인 프롬프트 포함)
       fs clear my-feature-group
       
@@ -151,7 +164,8 @@ def clear_feature_group(ctx, feature_group_name: str, online_only: bool, offline
       fs clear my-feature-group --offline-only
       
       # 백업 후 삭제
-      fs clear my-feature-group --backup-s3 s3://my-backup/fg-backup/
+      fs clear my-feature-group \\
+        --backup-s3 s3://my-backup/fg-backup/
       
       # 강제 삭제 (확인 없음)
       fs clear my-feature-group --force
@@ -182,7 +196,8 @@ def migrate_feature_group(ctx, source_feature_group: str, target_feature_group: 
                          dry_run: bool, filter_query: Optional[str]):
     """피처 그룹 간 데이터 마이그레이션
     
-    예제:
+    \b
+    예시:
       # 기본 마이그레이션
       fs migrate source-fg target-fg
       
@@ -190,13 +205,15 @@ def migrate_feature_group(ctx, source_feature_group: str, target_feature_group: 
       fs migrate source-fg target-fg --clear-target
       
       # 배치 사이즈 조정
-      fs migrate source-fg target-fg --batch-size 50 --max-workers 8
+      fs migrate source-fg target-fg \\
+        --batch-size 50 --max-workers 8
       
       # 계획만 확인 (실제 마이그레이션 없음)
       fs migrate source-fg target-fg --dry-run
       
       # 특정 조건의 데이터만 마이그레이션
-      fs migrate source-fg target-fg --filter-query "WHERE created_date >= '2024-01-01'"
+      fs migrate source-fg target-fg \\
+        --filter-query "WHERE created_date >= '2024-01-01'"
     """
     if batch_size <= 0:
         click.echo("배치 사이즈는 1 이상이어야 합니다.", err=True)

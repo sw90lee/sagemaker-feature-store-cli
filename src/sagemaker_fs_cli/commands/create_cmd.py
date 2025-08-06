@@ -49,21 +49,40 @@ def create(
     tags: Tuple[str, ...],
     wait: bool
 ):
-    """
-    Feature Group을 생성합니다.
+    """Feature Group을 생성합니다.
     
     FEATURE_GROUP_NAME: 생성할 Feature Group의 이름
     
+    \b
     예시:
-    
       # 기본 생성 (online + offline)
-      fs create my-feature-group --schema-file schema.json --role-arn arn:aws:iam::123456789012:role/SageMakerRole --s3-uri s3://my-bucket/feature-store/
+      fs create my-feature-group \\
+        --schema-file schema.json \\
+        --role-arn arn:aws:iam::123456789012:role/SageMakerRole \\
+        --s3-uri s3://my-bucket/feature-store/
       
       # Online store만 생성
-      fs create my-online-feature-group --schema-file schema.json --role-arn arn:aws:iam::123456789012:role/SageMakerRole --no-offline-store
+      fs create my-online-feature-group \\
+        --schema-file schema.json \\
+        --role-arn arn:aws:iam::123456789012:role/SageMakerRole \\
+        --no-offline-store
       
       # 고급 설정으로 생성
-      fs create my-advanced-feature-group --schema-file schema.json --role-arn arn:aws:iam::123456789012:role/SageMakerRole --s3-uri s3://my-bucket/feature-store/ --description "고객 프로필 피처 그룹" --record-identifier-name customer_id --event-time-feature-name timestamp --enable-encryption --kms-key-id alias/sagemaker-key --table-format Iceberg --throughput-mode Provisioned --read-capacity-units 5 --write-capacity-units 5 --tags environment=production --tags team=ml
+      fs create my-advanced-feature-group \\
+        --schema-file schema.json \\
+        --role-arn arn:aws:iam::123456789012:role/SageMakerRole \\
+        --s3-uri s3://my-bucket/feature-store/ \\
+        --description "고객 프로필 피처 그룹" \\
+        --record-identifier-name customer_id \\
+        --event-time-feature-name timestamp \\
+        --enable-encryption \\
+        --kms-key-id alias/sagemaker-key \\
+        --table-format Iceberg \\
+        --throughput-mode Provisioned \\
+        --read-capacity-units 5 \\
+        --write-capacity-units 5 \\
+        --tags environment=production \\
+        --tags team=ml
     """
     try:
         click.echo("🚀 Feature Group 생성 시작...")

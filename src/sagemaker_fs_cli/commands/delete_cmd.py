@@ -24,15 +24,14 @@ def delete(
     wait: bool,
     dry_run: bool
 ):
-    """
-    Feature Group을 완전히 삭제합니다.
+    """Feature Group을 완전히 삭제합니다.
     
     ⚠️  주의: 이 작업은 되돌릴 수 없습니다!
     
     FEATURE_GROUP_NAME: 삭제할 Feature Group의 이름
     
+    \b
     예시:
-    
       # 기본 삭제 (확인 프롬프트 포함)
       fs delete my-feature-group
       
