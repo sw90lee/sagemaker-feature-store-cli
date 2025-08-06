@@ -8,7 +8,7 @@ from ..utils.formatter import OutputFormatter
 
 
 def list_feature_groups(config: Config, output_format: str) -> None:
-    """List all feature groups with online store enabled"""
+    """List all feature groups with online or offline store enabled"""
     try:
         feature_groups = []
         paginator = config.sagemaker.get_paginator('list_feature_groups')
@@ -21,14 +21,14 @@ def list_feature_groups(config: Config, output_format: str) -> None:
                         FeatureGroupName=fg['FeatureGroupName']
                     )
                     
-                    # Only include feature groups with online store enabled
-                    if fg_details.get('OnlineStoreConfig'):
-                        online_config = fg_details.get('OnlineStoreConfig', {})
-                        offline_config = fg_details.get('OfflineStoreConfig', {})
-                        
-                        # Extract detailed online store information
-                        storage_type = online_config.get('StorageType', 'Standard')
-                        ttl_duration = online_config.get('TtlDuration')
+                    # Include feature groups with online or offline store enabled
+                    online_config = fg_details.get('OnlineStoreConfig', {})
+                    offline_config = fg_details.get('OfflineStoreConfig', {})
+                    
+                    if online_config or offline_config:
+                        # Extract detailed online store information (if available)
+                        storage_type = online_config.get('StorageType', 'N/A') if online_config else 'N/A'
+                        ttl_duration = online_config.get('TtlDuration') if online_config else None
                         if ttl_duration:
                             ttl_value = f"{ttl_duration.get('Value', 'N/A')} {ttl_duration.get('Unit', '')}"
                         else:
@@ -64,7 +64,7 @@ def list_feature_groups(config: Config, output_format: str) -> None:
                     click.echo(f"경고: 피처 그룹 {fg['FeatureGroupName']} 정보를 가져올 수 없습니다: {e}", err=True)
         
         if not feature_groups:
-            click.echo("온라인 피처 그룹을 찾을 수 없습니다.")
+            click.echo("피처 그룹을 찾을 수 없습니다.")
             return
         
         if output_format == 'table':
