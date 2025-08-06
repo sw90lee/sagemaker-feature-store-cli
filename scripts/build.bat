@@ -29,10 +29,8 @@ REM Rename executable with platform info
 set PLATFORM=windows
 set ARCH=x64
 
-move dist\fs.exe dist\fs-%PLATFORM%-%ARCH%.exe
 
 echo Build completed successfully!
-echo Executable: dist\fs-%PLATFORM%-%ARCH%.exe
 
 REM Clean up
 call deactivate
