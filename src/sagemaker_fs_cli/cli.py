@@ -3,7 +3,7 @@
 import click
 from typing import Optional
 from .config import Config
-from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd
+from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd
 
 
 @click.group()
@@ -21,7 +21,7 @@ def cli(ctx, profile: Optional[str], region: Optional[str]):
               help='출력 형식')
 @click.pass_context
 def list_feature_groups(ctx, output_format: str):
-    """모든 온라인 피처 그룹 목록 조회"""
+    """모든 피처 그룹 목록 조회 (온라인/오프라인)"""
     config = ctx.obj['config']
     list_cmd.list_feature_groups(config, output_format)
 
@@ -75,6 +75,56 @@ def bulk_put_records(ctx, feature_group_name: str, input_file: str, output_file:
     """입력 파일(JSON/CSV)을 사용하여 피처 그룹에 대량 레코드 저장"""
     config = ctx.obj['config']
     bulk_put_cmd.bulk_put_records(config, feature_group_name, input_file, output_file)
+
+
+@cli.command('clear')
+@click.argument('feature_group_name')
+@click.option('--online-only', is_flag=True, help='온라인 스토어만 삭제')
+@click.option('--offline-only', is_flag=True, help='오프라인 스토어만 삭제')
+@click.option('--force', is_flag=True, help='확인 없이 즉시 삭제')
+@click.option('--backup-s3', help='삭제 전 S3 백업 경로')
+@click.option('--dry-run', is_flag=True, help='실제 삭제 없이 계획만 확인')
+@click.pass_context
+def clear_feature_group(ctx, feature_group_name: str, online_only: bool, offline_only: bool, 
+                       force: bool, backup_s3: Optional[str], dry_run: bool):
+    """피처 그룹의 모든 데이터 삭제"""
+    if online_only and offline_only:
+        click.echo("--online-only와 --offline-only 옵션을 동시에 사용할 수 없습니다.", err=True)
+        raise click.Abort()
+    
+    config = ctx.obj['config']
+    clear_cmd.clear_feature_group(config, feature_group_name, online_only, offline_only, 
+                                 force, backup_s3, dry_run)
+
+
+@cli.command('migrate')
+@click.argument('source_feature_group')
+@click.argument('target_feature_group')
+@click.option('--clear-target', is_flag=True, help='타겟 피처그룹의 기존 데이터 삭제')
+@click.option('--batch-size', default=100, help='배치 처리 사이즈 (기본: 100)')
+@click.option('--max-workers', default=4, help='동시 처리 워커 수 (기본: 4)')
+@click.option('--dry-run', is_flag=True, help='실제 마이그레이션 없이 계획만 확인')
+@click.option('--filter-query', help='마이그레이션할 데이터 필터링 (SQL WHERE 절)')
+@click.pass_context
+def migrate_feature_group(ctx, source_feature_group: str, target_feature_group: str, 
+                         clear_target: bool, batch_size: int, max_workers: int, 
+                         dry_run: bool, filter_query: Optional[str]):
+    """피처 그룹 간 데이터 마이그레이션"""
+    if batch_size <= 0:
+        click.echo("배치 사이즈는 1 이상이어야 합니다.", err=True)
+        raise click.Abort()
+    
+    if max_workers <= 0:
+        click.echo("워커 수는 1 이상이어야 합니다.", err=True)
+        raise click.Abort()
+    
+    config = ctx.obj['config']
+    migrate_cmd.migrate_feature_group(
+        config, source_feature_group, target_feature_group,
+        clear_target=clear_target, batch_size=batch_size, 
+        max_workers=max_workers, dry_run=dry_run, 
+        filter_query=filter_query
+    )
 
 
 if __name__ == '__main__':

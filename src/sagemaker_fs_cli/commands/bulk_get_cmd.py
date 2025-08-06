@@ -2,8 +2,7 @@
 
 import click
 import os
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError
@@ -45,10 +44,9 @@ def get_single_record(config: Config, feature_group_name: str, record_id: str,
 
 
 def replace_time_field_with_current(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Replace Time field with current timestamp in KST (Asia/Seoul) timezone"""
-    # Get current time in KST (Asia/Seoul)
-    kst_timezone = ZoneInfo("Asia/Seoul")
-    current_timestamp = datetime.now(kst_timezone).strftime('%Y-%m-%dT%H:%M:%SZ')
+    """Replace Time field with current timestamp in UTC timezone"""
+    # Get current time in UTC
+    current_timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
     
     for record in records:
         if 'Time' in record:
