@@ -6,6 +6,7 @@ import csv
 import gzip
 import time
 import os
+import tempfile
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 from urllib.parse import urlparse
@@ -448,8 +449,9 @@ def _download_from_s3(config: Config, s3_url: str) -> str:
         bucket_name = parsed_url.netloc
         key = parsed_url.path.lstrip('/')
         
-        # 임시 파일명
-        temp_file = f"/tmp/athena_result_{int(time.time())}.csv"
+        # 임시 파일명 (OS에 맞는 임시 디렉토리 사용)
+        temp_dir = tempfile.gettempdir()
+        temp_file = os.path.join(temp_dir, f"athena_result_{int(time.time())}.csv")
         
         # 다운로드
         with tqdm(desc="S3에서 결과 다운로드 중", unit="B", unit_scale=True) as pbar:
