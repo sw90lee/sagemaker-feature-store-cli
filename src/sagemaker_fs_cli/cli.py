@@ -3,7 +3,7 @@
 import click
 from typing import Optional
 from .config import Config
-from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd
+from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd, export_cmd
 
 
 @click.group()
@@ -11,7 +11,7 @@ from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, cl
 @click.option('--region', help='사용할 AWS 리전')
 @click.pass_context
 def cli(ctx, profile: Optional[str], region: Optional[str]):
-    """SageMaker FeatureStore Online CLI - 온라인 피처 스토어 관리 도구"""
+    """SageMaker FeatureStore CLI - 온라인/오프라인 피처 스토어 관리 도구"""
     ctx.ensure_object(dict)
     ctx.obj['config'] = Config(profile=profile, region=region)
 
@@ -232,9 +232,10 @@ def migrate_feature_group(ctx, source_feature_group: str, target_feature_group: 
     )
 
 
-# create, delete 명령어 등록
+# create, delete, export 명령어 등록
 cli.add_command(create_cmd.create)
 cli.add_command(delete_cmd.delete)
+cli.add_command(export_cmd.export)
 
 
 if __name__ == '__main__':
