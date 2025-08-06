@@ -1,14 +1,22 @@
-# SageMaker FeatureStore Online CLI
+# SageMaker FeatureStore CLI
 
-AWS SageMaker FeatureStore Online 스토어를 관리하기 위한 명령줄 도구입니다.
+AWS SageMaker FeatureStore Online/Offline 스토어를 관리하기 위한 명령줄 도구입니다.
 
 ## 기능
 
+### Online Store 기능
 - **list**: 온라인 피처스토어 목록 조회
 - **get**: 단일 레코드 조회
 - **put**: 단일 레코드 업데이트
 - **bulk-get**: JSON/CSV 파일을 통한 대량 데이터 조회
 - **bulk-put**: JSON/CSV 파일을 통한 대량 데이터 업데이트
+
+### Offline Store 기능
+- **export**: 오프라인 피처스토어 데이터를 파일로 내보내기 (CSV, JSON, Parquet)
+
+### 피처스토어 관리 기능
+- **create**: 새 피처그룹 생성
+- **delete**: 피처그룹 삭제
 
 ## 설치
 
@@ -35,7 +43,7 @@ pip install -e .
 ### 기본 명령어 구조
 
 ```bash
-sagemaker-fs [--profile PROFILE] [--region REGION] COMMAND [OPTIONS]
+fs [--profile PROFILE] [--region REGION] COMMAND [OPTIONS]
 ```
 
 또는 짧은 명령어:
@@ -48,55 +56,109 @@ sm-fs [--profile PROFILE] [--region REGION] COMMAND [OPTIONS]
 
 ```bash
 # 테이블 형태로 출력
-sagemaker-fs list
+fs list
 
 # JSON 형태로 출력
-sagemaker-fs list --output-format json
+fs list --output-format json
 ```
 
 ### 2. 단일 레코드 조회
 
 ```bash
 # 기본 조회
-sagemaker-fs get my-feature-group record-id-123
+fs get my-feature-group record-id-123
 
 # 특정 피처만 조회
-sagemaker-fs get my-feature-group record-id-123 --feature-names "feature1,feature2,feature3"
+fs get my-feature-group record-id-123 --feature-names "feature1,feature2,feature3"
 
 # JSON 형태로 출력
-sagemaker-fs get my-feature-group record-id-123 --output-format json
+fs get my-feature-group record-id-123 --output-format json
 ```
 
 ### 3. 단일 레코드 업데이트
 
 ```bash
-sagemaker-fs put my-feature-group --record '{"feature1": "value1", "feature2": "value2", "record_id": "123"}'
+fs put my-feature-group --record '{"feature1": "value1", "feature2": "value2", "record_id": "123"}'
 ```
 
 ### 4. 대량 데이터 조회
 
 ```bash
 # JSON 파일에서 레코드 ID 목록을 읽어 조회
-sagemaker-fs bulk-get my-feature-group input_ids.json
+fs bulk-get my-feature-group input_ids.json
 
 # 결과를 파일로 저장
-sagemaker-fs bulk-get my-feature-group input_ids.json --output-file results.json
+fs bulk-get my-feature-group input_ids.json --output-file results.json
 
 # CSV 파일 사용
-sagemaker-fs bulk-get my-feature-group input_ids.csv --output-file results.csv
+fs bulk-get my-feature-group input_ids.csv --output-file results.csv
 
 # 특정 피처만 조회
-sagemaker-fs bulk-get my-feature-group input_ids.json --feature-names "feature1,feature2"
+fs bulk-get my-feature-group input_ids.json --feature-names "feature1,feature2"
 ```
 
 ### 5. 대량 데이터 업데이트
 
 ```bash
 # JSON 파일에서 레코드들을 읽어 업데이트
-sagemaker-fs bulk-put my-feature-group records.json
+fs bulk-put my-feature-group records.json
 
 # CSV 파일 사용
-sagemaker-fs bulk-put my-feature-group records.csv
+fs bulk-put my-feature-group records.csv
+```
+
+### 6. 오프라인 스토어 데이터 내보내기
+
+```bash
+# 기본 내보내기 (CSV 형식)
+fs export my-feature-group data.csv
+
+# JSON 형식으로 내보내기
+fs export my-feature-group data.json --format json
+
+# 특정 컬럼만 내보내기
+fs export my-feature-group data.csv --columns "customer_id,age,balance"
+
+# 조건부 내보내기
+fs export my-feature-group recent_data.csv --where "event_time >= '2024-01-01'"
+
+# 최대 1000건만 내보내기
+fs export my-feature-group sample_data.csv --limit 1000
+
+# 압축된 파일로 내보내기
+fs export my-feature-group data.csv.gz --compress
+
+# Online Store 호환 형식으로 내보내기
+fs export my-feature-group online_data.json --online-compatible
+
+# 컬럼명 매핑하여 내보내기
+fs export my-feature-group mapped_data.csv --column-mapping "event_time:EventTime,customer_id:record_id"
+
+# 내보내기 계획만 확인
+fs export my-feature-group data.csv --dry-run
+```
+
+### 7. 피처그룹 생성
+
+```bash
+# 기본 피처그룹 생성
+fs create my-feature-group --record-identifier-name customer_id
+
+# 온라인/오프라인 스토어 모두 활성화
+fs create my-feature-group --record-identifier-name customer_id --enable-online-store --enable-offline-store
+
+# S3 경로 지정하여 생성
+fs create my-feature-group --record-identifier-name customer_id --offline-store-s3-uri s3://my-bucket/feature-store/
+```
+
+### 8. 피처그룹 삭제
+
+```bash
+# 피처그룹 삭제
+fs delete my-feature-group
+
+# 강제 삭제 (확인 없이)
+fs delete my-feature-group --force
 ```
 
 ## 파일 형식
@@ -157,6 +219,7 @@ record_id,feature1,feature2,EventTime
 
 ### 필요한 IAM 권한
 
+#### Online Store 사용 시
 ```json
 {
   "Version": "2012-10-17",
@@ -168,6 +231,49 @@ record_id,feature1,feature2,EventTime
         "sagemaker:DescribeFeatureGroup",
         "sagemaker-featurestore-runtime:GetRecord",
         "sagemaker-featurestore-runtime:PutRecord"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+#### Offline Store (export) 사용 시 추가 권한
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:ListTableMetadata",
+        "glue:GetDatabase",
+        "glue:GetTable",
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+#### 피처그룹 관리 (create/delete) 시 추가 권한
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sagemaker:CreateFeatureGroup",
+        "sagemaker:DeleteFeatureGroup",
+        "iam:GetRole",
+        "iam:PassRole"
       ],
       "Resource": "*"
     }
@@ -222,22 +328,22 @@ python scripts/build.py
 
 1. 사용 가능한 피처스토어 확인:
    ```bash
-   sagemaker-fs list
+   fs list
    ```
 
 2. 샘플 데이터 조회:
    ```bash
-   sagemaker-fs get my-feature-group sample-id-123
+   fs get my-feature-group sample-id-123
    ```
 
 3. 대량 데이터 조회:
    ```bash
-   sagemaker-fs bulk-get my-feature-group record_ids.json -o results.json
+   fs bulk-get my-feature-group record_ids.json -o results.json
    ```
 
 4. 데이터 업데이트:
    ```bash
-   sagemaker-fs bulk-put my-feature-group updated_records.json
+   fs bulk-put my-feature-group updated_records.json
    ```
 
 ## 문제 해결
