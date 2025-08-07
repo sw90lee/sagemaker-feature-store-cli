@@ -53,11 +53,12 @@ class FeatureStoreAnalyzer:
         return size_gb * cost_per_gb
     
     def analyze_feature_store_storage(self, bucket: str, prefix: str, feature_group_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Analyze Feature Store storage with detailed statistics"""
+        """Analyze Feature Store offline storage (S3) with detailed statistics"""
         click.echo(f"\n{'='*60}")
-        click.echo(f"Feature Store 분석: s3://{bucket}/{prefix}")
+        click.echo(f"Feature Store 오프라인 스토어 분석: s3://{bucket}/{prefix}")
         if feature_group_name:
             click.echo(f"피처 그룹: {feature_group_name}")
+        click.echo(f"⚠️  주의: 오프라인 스토어(S3)만 분석됩니다")
         click.echo(f"{'='*60}\n")
         
         objects = []
@@ -236,7 +237,7 @@ class FeatureStoreAnalyzer:
 def analyze_feature_store(config: Config, feature_group_name: Optional[str], 
                          bucket: Optional[str], prefix: Optional[str], 
                          export_file: Optional[str], output_format: str) -> None:
-    """Analyze Feature Store storage usage and costs"""
+    """Analyze Feature Store offline storage (S3) usage and costs"""
     try:
         analyzer = FeatureStoreAnalyzer(config)
         

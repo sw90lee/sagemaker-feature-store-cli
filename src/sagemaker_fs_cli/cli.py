@@ -247,11 +247,14 @@ cli.add_command(export_cmd.export)
 @click.pass_context
 def analyze_feature_store(ctx, feature_group_name: Optional[str], bucket: Optional[str], 
                          prefix: Optional[str], export: Optional[str], output_format: str):
-    """피처 스토어 용량 및 비용 분석
+    """피처 스토어 오프라인 스토어(S3) 용량 및 비용 분석
+    
+    ⚠️  주의: 이 명령어는 오프라인 스토어(S3)만 분석합니다. 
+         온라인 스토어(DynamoDB)는 분석하지 않습니다.
     
     \b
     예시:
-      # 특정 피처 그룹 분석
+      # 특정 피처 그룹의 오프라인 스토어 분석
       fs analyze my-feature-group
       
       # S3 위치 직접 분석

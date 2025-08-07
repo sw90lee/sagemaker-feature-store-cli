@@ -17,7 +17,7 @@ AWS SageMaker FeatureStore Online/Offline 스토어를 관리하기 위한 명�
 ### 피처스토어 관리 기능
 - **create**: 새 피처그룹 생성
 - **delete**: 피처그룹 삭제
-- **analyze**: 피처스토어 용량 및 비용 분석
+- **analyze**: 피처스토어 오프라인 스토어(S3) 용량 및 비용 분석
 
 ## 설치
 
@@ -166,10 +166,12 @@ fs delete my-feature-group
 fs delete my-feature-group --force
 ```
 
-### 9. 피처스토어 용량 및 비용 분석
+### 9. 피처스토어 오프라인 스토어 용량 및 비용 분석
+
+⚠️ **주의**: 이 명령어는 오프라인 스토어(S3)만 분석합니다. 온라인 스토어(DynamoDB)는 분석하지 않습니다.
 
 ```bash
-# 특정 피처그룹 분석
+# 특정 피처그룹의 오프라인 스토어 분석
 fs analyze my-feature-group
 
 # S3 위치 직접 분석
@@ -302,7 +304,7 @@ record_id,feature1,feature2,EventTime
 }
 ```
 
-#### 피처스토어 분석 (analyze) 시 추가 권한
+#### 피처스토어 오프라인 스토어 분석 (analyze) 시 추가 권한
 ```json
 {
   "Version": "2012-10-17",
