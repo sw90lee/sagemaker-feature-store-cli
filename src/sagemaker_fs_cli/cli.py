@@ -3,7 +3,7 @@
 import click
 from typing import Optional
 from .config import Config
-from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd, export_cmd
+from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd, export_cmd, analyze_cmd
 
 
 @click.group()
@@ -232,10 +232,43 @@ def migrate_feature_group(ctx, source_feature_group: str, target_feature_group: 
     )
 
 
-# create, delete, export 명령어 등록
+# create, delete, export, analyze 명령어 등록
 cli.add_command(create_cmd.create)
 cli.add_command(delete_cmd.delete)
 cli.add_command(export_cmd.export)
+
+@cli.command('analyze')
+@click.argument('feature_group_name', required=False)
+@click.option('--bucket', help='S3 버킷 이름')
+@click.option('--prefix', help='S3 프리픽스 경로')
+@click.option('--export', help='결과를 CSV 파일로 내보낼 경로')
+@click.option('--output-format', '-o', type=click.Choice(['table', 'json']), default='table',
+              help='출력 형식')
+@click.pass_context
+def analyze_feature_store(ctx, feature_group_name: Optional[str], bucket: Optional[str], 
+                         prefix: Optional[str], export: Optional[str], output_format: str):
+    """피처 스토어 용량 및 비용 분석
+    
+    \b
+    예시:
+      # 특정 피처 그룹 분석
+      fs analyze my-feature-group
+      
+      # S3 위치 직접 분석
+      fs analyze --bucket my-bucket --prefix path/to/data
+      
+      # 결과를 CSV로 내보내기
+      fs analyze my-feature-group --export analysis_report.csv
+      
+      # JSON 형태로 출력
+      fs analyze my-feature-group --output-format json
+    """
+    if not feature_group_name and (not bucket or not prefix):
+        click.echo("피처 그룹 이름 또는 --bucket과 --prefix를 모두 제공해야 합니다.", err=True)
+        raise click.Abort()
+    
+    config = ctx.obj['config']
+    analyze_cmd.analyze_feature_store(config, feature_group_name, bucket, prefix, export, output_format)
 
 
 if __name__ == '__main__':

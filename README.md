@@ -8,7 +8,7 @@ AWS SageMaker FeatureStore Online/Offline 스토어를 관리하기 위한 명�
 - **list**: 온라인 피처스토어 목록 조회
 - **get**: 단일 레코드 조회
 - **put**: 단일 레코드 업데이트
-- **bulk-get**: JSON/CSV 파일을 통한 대량 데이터 조회
+- **bulk-get**: JSON/CSV 파일을 통한 대량 데이터 조회 (--current-time 옵션으로 Time 필드를 현재 시간으로 교체 가능)
 - **bulk-put**: JSON/CSV 파일을 통한 대량 데이터 업데이트
 
 ### Offline Store 기능
@@ -17,6 +17,7 @@ AWS SageMaker FeatureStore Online/Offline 스토어를 관리하기 위한 명�
 ### 피처스토어 관리 기능
 - **create**: 새 피처그룹 생성
 - **delete**: 피처그룹 삭제
+- **analyze**: 피처스토어 용량 및 비용 분석
 
 ## 설치
 
@@ -95,6 +96,10 @@ fs bulk-get my-feature-group input_ids.csv --output-file results.csv
 
 # 특정 피처만 조회
 fs bulk-get my-feature-group input_ids.json --feature-names "feature1,feature2"
+
+# Time 필드를 현재 시간으로 교체하여 조회
+fs bulk-get my-feature-group input_ids.json --current-time
+fs bulk-get my-feature-group input_ids.json -c
 ```
 
 ### 5. 대량 데이터 업데이트
@@ -159,6 +164,22 @@ fs delete my-feature-group
 
 # 강제 삭제 (확인 없이)
 fs delete my-feature-group --force
+```
+
+### 9. 피처스토어 용량 및 비용 분석
+
+```bash
+# 특정 피처그룹 분석
+fs analyze my-feature-group
+
+# S3 위치 직접 분석
+fs analyze --bucket my-bucket --prefix path/to/data
+
+# 결과를 CSV로 내보내기
+fs analyze my-feature-group --export analysis_report.csv
+
+# JSON 형식으로 출력
+fs analyze my-feature-group --output-format json
 ```
 
 ## 파일 형식
@@ -276,6 +297,27 @@ record_id,feature1,feature2,EventTime
         "iam:PassRole"
       ],
       "Resource": "*"
+    }
+  ]
+}
+```
+
+#### 피처스토어 분석 (analyze) 시 추가 권한
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "Resource": [
+        "arn:aws:s3:::your-feature-store-bucket",
+        "arn:aws:s3:::your-feature-store-bucket/*"
+      ]
     }
   ]
 }
