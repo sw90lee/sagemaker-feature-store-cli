@@ -3,7 +3,7 @@
 import click
 from typing import Optional
 from .config import Config
-from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd, export_cmd, analyze_cmd
+from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd, export_cmd, analyze_cmd, add_features_cmd
 
 
 @click.group()
@@ -120,8 +120,9 @@ def bulk_get_records(ctx, feature_group_name: str, input_file: str,
 @click.argument('feature_group_name')
 @click.argument('input_file')
 @click.option('--output-file', '-o', help='결과 로그를 저장할 파일 경로')
+@click.option('--batch-size', default=100, help='배치 처리 크기 (기본값: 100, 최대 1000 권장)')
 @click.pass_context
-def bulk_put_records(ctx, feature_group_name: str, input_file: str, output_file: Optional[str]):
+def bulk_put_records(ctx, feature_group_name: str, input_file: str, output_file: Optional[str], batch_size: int):
     """입력 파일(JSON/CSV)을 사용하여 피처 그룹에 대량 레코드 저장
     
     \b
@@ -132,12 +133,19 @@ def bulk_put_records(ctx, feature_group_name: str, input_file: str, output_file:
       # CSV 파일 사용
       fs bulk-put my-feature-group records.csv
       
+      # 배치 크기 조정으로 성능 향상
+      fs bulk-put my-feature-group records.csv --batch-size 500
+      
       # 결과 로그를 파일로 저장
       fs bulk-put my-feature-group records.json \\
-        --output-file logs.txt
+        --output-file logs.txt --batch-size 200
     """
+    if batch_size <= 0 or batch_size > 1000:
+        click.echo("배치 크기는 1-1000 사이여야 합니다.", err=True)
+        raise click.Abort()
+    
     config = ctx.obj['config']
-    bulk_put_cmd.bulk_put_records(config, feature_group_name, input_file, output_file)
+    bulk_put_cmd.bulk_put_records(config, feature_group_name, input_file, output_file, batch_size)
 
 
 @cli.command('clear')
@@ -272,6 +280,64 @@ def analyze_feature_store(ctx, feature_group_name: Optional[str], bucket: Option
     
     config = ctx.obj['config']
     analyze_cmd.analyze_feature_store(config, feature_group_name, bucket, prefix, export, output_format)
+
+
+@cli.command('add-features')
+@click.argument('feature_group_name')
+@click.argument('features_file')
+@click.option('--dry-run', is_flag=True, help='실제 변경 없이 계획만 확인')
+@click.option('--wait/--no-wait', default=True, help='업데이트 완료까지 대기 여부 (기본값: True)')
+@click.pass_context
+def add_features_command(ctx, feature_group_name: str, features_file: str, dry_run: bool, wait: bool):
+    """피처 그룹에 새로운 feature들을 추가합니다.
+    
+    \b
+    예시:
+      # 새로운 feature들 추가
+      fs add-features my-feature-group new_features.json
+      
+      # 미리보기만 확인
+      fs add-features my-feature-group new_features.json --dry-run
+      
+      # 백그라운드에서 업데이트
+      fs add-features my-feature-group new_features.json --no-wait
+    """
+    add_features_cmd.add_features(feature_group_name, features_file, dry_run, wait)
+
+
+@cli.command('schema')
+@click.argument('feature_group_name')
+@click.option('--output-format', '-o', type=click.Choice(['table', 'json']), default='table',
+              help='출력 형식')
+@click.pass_context
+def show_schema(ctx, feature_group_name: str, output_format: str):
+    """피처 그룹의 현재 스키마 조회
+    
+    \b
+    예시:
+      # 테이블 형태로 스키마 출력
+      fs schema my-feature-group
+      
+      # JSON 형태로 스키마 출력
+      fs schema my-feature-group --output-format json
+    """
+    add_features_cmd.show_schema(feature_group_name, output_format)
+
+
+@cli.command('schema-template')
+@click.option('--output', '-o', default='feature_template.json', help='출력 파일 경로')
+def generate_template(output: str):
+    """새로운 feature definition 템플릿 파일 생성
+    
+    \b
+    예시:
+      # 기본 템플릿 생성
+      fs schema-template
+      
+      # 특정 파일명으로 템플릿 생성
+      fs schema-template --output my_features.json
+    """
+    add_features_cmd.generate_feature_template(output)
 
 
 if __name__ == '__main__':

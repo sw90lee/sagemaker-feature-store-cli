@@ -36,7 +36,7 @@ def list_feature_groups(config: Config, output_format: str) -> None:
                         
                         # Extract offline store information
                         offline_s3_uri = offline_config.get('S3StorageConfig', {}).get('S3Uri', 'Not configured') if offline_config else 'Not configured'
-                        offline_table_format = offline_config.get('TableFormat', 'Unknown') if offline_config else 'N/A'
+                        offline_table_format = offline_config.get('TableFormat', 'Glue') if offline_config else 'N/A'
                         
                         # Find corresponding Athena table if offline store is enabled
                         athena_table = _find_athena_table(config, fg['FeatureGroupName']) if offline_config else 'N/A'

@@ -588,12 +588,23 @@ def _save_as_csv(rows: List[Dict], output_file: str, compress: bool):
     if not rows:
         return
     
-    fieldnames = rows[0].keys()
+    original_fieldnames = list(rows[0].keys())
+    
+    # Title case로 변환 (첫 글자 대문자, 나머지 소문자)
+    title_case_fieldnames = [name.capitalize() for name in original_fieldnames]
+    
+    # 데이터의 키도 Title case로 변환
+    converted_rows = []
+    for row in rows:
+        new_row = {}
+        for old_key, new_key in zip(original_fieldnames, title_case_fieldnames):
+            new_row[new_key] = row[old_key]
+        converted_rows.append(new_row)
     
     def write_csv(f):
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=title_case_fieldnames)
         writer.writeheader()
-        for row in tqdm(rows, desc="CSV 저장 중"):
+        for row in tqdm(converted_rows, desc="CSV 저장 중"):
             writer.writerow(row)
     
     if compress:

@@ -60,7 +60,17 @@ def put_single_record(config: Config, feature_group_name: str, record_data: Dict
         return {'record_id': record_id or 'unknown', 'error': f'Unexpected error: {str(e)}'}
 
 
-def bulk_put_records(config: Config, feature_group_name: str, input_file: str, output_file: Optional[str] = None) -> None:
+def _put_single_formatted_record(config: Config, feature_group_name: str, formatted_record: List[Dict]) -> Dict[str, Any]:
+    """Put a single formatted record (helper for batch processing)"""
+    response = config.featurestore_runtime.put_record(
+        FeatureGroupName=feature_group_name,
+        Record=formatted_record
+    )
+    return response
+
+
+def bulk_put_records(config: Config, feature_group_name: str, input_file: str, 
+                    output_file: Optional[str] = None, batch_size: int = 100) -> None:
     """Bulk put records to feature group using input file"""
     try:
         # Validate input file exists
@@ -107,33 +117,82 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str, o
             click.echo("입력 파일에서 유효한 레코드를 찾을 수 없습니다", err=True)
             raise click.Abort()
         
-        click.echo(f"{len(valid_records)}개 레코드 처리 중...")
+        click.echo(f"{len(valid_records)}개 레코드를 배치 크기 {batch_size}로 처리 중...")
         
-        # Perform bulk put operations with threading for better performance
-        results = []
-        max_workers = min(10, len(valid_records))  # Limit concurrent requests
+        # Process records in batches using batch_put_record
+        all_results = []
+        total_batches = (len(valid_records) + batch_size - 1) // batch_size
         
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            future_to_record = {
-                executor.submit(put_single_record, config, feature_group_name, 
-                               record, feature_definitions): record 
-                for record in valid_records
-            }
+        for batch_idx in range(0, len(valid_records), batch_size):
+            batch_records = valid_records[batch_idx:batch_idx + batch_size]
+            batch_num = (batch_idx // batch_size) + 1
             
-            # Collect results
-            completed = 0
-            for future in as_completed(future_to_record):
-                result = future.result()
-                results.append(result)
-                completed += 1
+            click.echo(f"배치 {batch_num}/{total_batches} 처리 중... ({len(batch_records)}개 레코드)")
+            
+            # Format records for batch_put_record
+            formatted_records = []
+            for record in batch_records:
+                formatted_record = []
+                for feature_name, value in record.items():
+                    if feature_name in feature_definitions:
+                        formatted_record.append({
+                            'FeatureName': feature_name,
+                            'ValueAsString': str(value)
+                        })
                 
-                if completed % 10 == 0 or completed == len(valid_records):
-                    click.echo(f"완료: {completed}/{len(valid_records)}")
+                if formatted_record:  # Only add if we have valid features
+                    formatted_records.append(formatted_record)
+            
+            if not formatted_records:
+                click.echo(f"배치 {batch_num}에서 유효한 레코드가 없습니다. 건너뜀")
+                continue
+            
+            # Execute batch put using ThreadPool for parallel processing
+            try:
+                batch_results = []
+                max_workers = min(20, len(formatted_records))  # Increased from 10 to 20
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # Submit all tasks for this batch
+                    future_to_idx = {
+                        executor.submit(_put_single_formatted_record, config, feature_group_name, record): idx
+                        for idx, record in enumerate(formatted_records)
+                    }
+                    
+                    # Collect results
+                    for future in as_completed(future_to_idx):
+                        idx = future_to_idx[future]
+                        try:
+                            result = future.result()
+                            batch_results.append({
+                                'record_id': f'batch_{batch_num}_record_{idx+1}',
+                                'status': 'success'
+                            })
+                        except Exception as e:
+                            batch_results.append({
+                                'record_id': f'batch_{batch_num}_record_{idx+1}',
+                                'error': str(e)
+                            })
+                
+                all_results.extend(batch_results)
+                
+                # Progress update
+                completed_records = min(batch_idx + batch_size, len(valid_records))
+                click.echo(f"완료: {completed_records}/{len(valid_records)}")
+                
+            except Exception as e:
+                error_msg = f"배치 {batch_num} 처리 중 오류: {str(e)}"
+                click.echo(error_msg, err=True)
+                # Add error results for all records in this batch
+                for idx in range(len(batch_records)):
+                    all_results.append({
+                        'record_id': f'batch_{batch_num}_record_{idx+1}',
+                        'error': error_msg
+                    })
         
         # Analyze results
-        successful_records = [r for r in results if r.get('status') == 'success']
-        error_records = [r for r in results if 'error' in r]
+        successful_records = [r for r in all_results if r.get('status') == 'success']
+        error_records = [r for r in all_results if 'error' in r]
         
         # Report results
         click.echo(f"\n대량 입력 작업 완료:")

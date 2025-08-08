@@ -19,6 +19,11 @@ AWS SageMaker FeatureStore Online/Offline 스토어를 관리하기 위한 명�
 - **delete**: 피처그룹 삭제
 - **analyze**: 피처스토어 오프라인 스토어(S3) 용량 및 비용 분석
 
+### 스키마 관리 기능
+- **schema**: 피처 그룹의 현재 스키마 조회
+- **add-features**: 새로운 feature definition과 기존 스키마 비교 분석
+- **schema-template**: feature definition 템플릿 파일 생성
+
 ## 설치
 
 ### PyPI에서 설치 (패키지가 게시된 경우)
@@ -183,6 +188,47 @@ fs analyze my-feature-group --export analysis_report.csv
 # JSON 형식으로 출력
 fs analyze my-feature-group --output-format json
 ```
+
+### 10. 스키마 관리 기능
+
+#### 피처 그룹의 현재 스키마 조회
+
+```bash
+# 테이블 형태로 스키마 출력
+fs schema my-feature-group
+
+# JSON 형태로 스키마 출력
+fs schema my-feature-group --output-format json
+```
+
+#### 새로운 feature definition 템플릿 생성
+
+```bash
+# 기본 템플릿 생성
+fs schema-template
+
+# 특정 파일명으로 템플릿 생성
+fs schema-template --output my_features.json
+```
+
+#### 새로운 feature definition과 기존 스키마 비교
+
+```bash
+# 새로운 feature definition과 현재 스키마 비교
+fs add-features my-feature-group new_features.json
+
+# 계획만 확인 (파일 생성 없음)
+fs add-features my-feature-group new_features.json --dry-run
+```
+
+**스키마 관리 워크플로우:**
+1. `fs schema-template` - 템플릿 파일 생성
+2. 템플릿 파일을 편집하여 원하는 feature들 정의
+3. `fs add-features` - 현재 스키마와 비교 분석
+4. 필요시 새로운 feature group 생성 또는 데이터 마이그레이션
+
+⚠️ **주의**: SageMaker FeatureStore는 생성된 피처 그룹의 스키마를 직접 변경할 수 없습니다. 
+스키마를 변경하려면 새로운 피처 그룹을 생성하고 데이터를 마이그레이션해야 합니다.
 
 ## 파일 형식
 

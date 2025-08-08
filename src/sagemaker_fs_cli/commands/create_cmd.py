@@ -24,7 +24,7 @@ from tqdm import tqdm
 @click.option('--role-arn', type=str, required=True, help='IAM 역할 ARN (필수)')
 @click.option('--enable-encryption/--no-encryption', default=False, help='암호화 활성화 여부 (기본값: False)')
 @click.option('--kms-key-id', type=str, help='KMS 키 ID (암호화 사용시)')
-@click.option('--table-format', type=click.Choice(['Iceberg', 'Glue']), default='Iceberg', help='테이블 형식 (기본값: Iceberg)')
+@click.option('--table-format', type=click.Choice(['Iceberg', 'Glue']), default='Glue', help='테이블 형식 (기본값: Glue)')
 @click.option('--throughput-mode', type=click.Choice(['OnDemand', 'Provisioned']), default='OnDemand', help='처리량 모드 (기본값: OnDemand)')
 @click.option('--read-capacity-units', type=int, help='읽기 용량 단위 (Provisioned 모드에서만)')
 @click.option('--write-capacity-units', type=int, help='쓰기 용량 단위 (Provisioned 모드에서만)')
@@ -77,7 +77,7 @@ def create(
         --event-time-feature-name timestamp \\
         --enable-encryption \\
         --kms-key-id alias/sagemaker-key \\
-        --table-format Iceberg \\
+        --table-format Glue \\
         --throughput-mode Provisioned \\
         --read-capacity-units 5 \\
         --write-capacity-units 5 \\
@@ -279,16 +279,6 @@ def _create_feature_group_config(
                 'KmsKeyId': kms_key_id
             }
         
-        if throughput_mode == 'Provisioned':
-            online_store_config['ThroughputConfig'] = {
-                'ThroughputMode': 'Provisioned',
-                'ProvisionedReadCapacityUnits': read_capacity_units,
-                'ProvisionedWriteCapacityUnits': write_capacity_units
-            }
-        else:
-            online_store_config['ThroughputConfig'] = {
-                'ThroughputMode': 'OnDemand'
-            }
         
         config['OnlineStoreConfig'] = online_store_config
     
