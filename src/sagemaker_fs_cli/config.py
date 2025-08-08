@@ -13,6 +13,7 @@ class Config:
         self._session = None
         self._featurestore_runtime = None
         self._sagemaker = None
+        self._s3 = None
     
     @property
     def session(self):
@@ -37,3 +38,9 @@ class Config:
         if self._sagemaker is None:
             self._sagemaker = self.session.client('sagemaker')
         return self._sagemaker
+    
+    @property
+    def s3(self):
+        if self._s3 is None:
+            self._s3 = self.session.client('s3')
+        return self._s3
