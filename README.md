@@ -115,7 +115,19 @@ fs bulk-put my-feature-group records.json
 
 # CSV 파일 사용
 fs bulk-put my-feature-group records.csv
+
+# 배치 크기 조정으로 성능 향상
+fs bulk-put my-feature-group records.csv --batch-size 500
+
+# 결과 로그를 파일로 저장
+fs bulk-put my-feature-group records.json \
+  --output-file logs.txt --batch-size 200
 ```
+
+**성능 최적화:**
+- `--batch-size`: 배치 처리 크기 (기본값: 100, 최대 1000 권장)
+- 더 큰 배치 사이즈는 처리 속도를 향상시키지만, 너무 크면 메모리 사용량이 증가합니다
+- 네트워크 상황과 데이터 크기에 따라 최적값이 달라집니다
 
 ### 6. 오프라인 스토어 데이터 내보내기
 
@@ -151,15 +163,46 @@ fs export my-feature-group data.csv --dry-run
 ### 7. 피처그룹 생성
 
 ```bash
-# 기본 피처그룹 생성
-fs create my-feature-group --record-identifier-name customer_id
+# 기본 피처그룹 생성 (Online + Offline store)
+fs create my-feature-group \
+  --schema-file schema.json \
+  --role-arn arn:aws:iam::123456789012:role/SageMakerRole \
+  --s3-uri s3://my-bucket/feature-store/
 
-# 온라인/오프라인 스토어 모두 활성화
-fs create my-feature-group --record-identifier-name customer_id --enable-online-store --enable-offline-store
+# Online store만 생성
+fs create my-online-feature-group \
+  --schema-file schema.json \
+  --role-arn arn:aws:iam::123456789012:role/SageMakerRole \
+  --no-offline-store
 
-# S3 경로 지정하여 생성
-fs create my-feature-group --record-identifier-name customer_id --offline-store-s3-uri s3://my-bucket/feature-store/
+# TTL(자동 만료) 설정과 함께 생성
+fs create my-feature-group \
+  --schema-file schema.json \
+  --role-arn arn:aws:iam::123456789012:role/SageMakerRole \
+  --s3-uri s3://my-bucket/feature-store/ \
+  --ttl-duration 30 \
+  --description "30일 후 자동 삭제되는 피처 그룹"
+
+# 고급 설정으로 생성
+fs create my-advanced-feature-group \
+  --schema-file schema.json \
+  --role-arn arn:aws:iam::123456789012:role/SageMakerRole \
+  --s3-uri s3://my-bucket/feature-store/ \
+  --description "고객 프로필 피처 그룹" \
+  --record-identifier-name customer_id \
+  --event-time-feature-name timestamp \
+  --ttl-duration 365 \
+  --enable-encryption \
+  --kms-key-id alias/sagemaker-key \
+  --table-format Glue \
+  --tags environment=production \
+  --tags team=ml
 ```
+
+**TTL(Time To Live) 기능:**
+- `--ttl-duration`: Online store 데이터의 자동 만료 기간 (1-365일)
+- TTL 설정 시 Online store가 자동으로 활성화됩니다
+- 설정된 기간 후 데이터가 자동으로 삭제되어 스토리지 비용을 절약할 수 있습니다
 
 ### 8. 피처그룹 삭제
 
