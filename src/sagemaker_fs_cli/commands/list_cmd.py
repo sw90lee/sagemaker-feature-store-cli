@@ -1,7 +1,7 @@
 """List command implementation"""
 
 import click
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from botocore.exceptions import ClientError
 from ..config import Config
 from ..utils.formatter import OutputFormatter
@@ -38,6 +38,9 @@ def list_feature_groups(config: Config, output_format: str) -> None:
                         offline_s3_uri = offline_config.get('S3StorageConfig', {}).get('S3Uri', 'Not configured') if offline_config else 'Not configured'
                         offline_table_format = offline_config.get('TableFormat', 'Unknown') if offline_config else 'N/A'
                         
+                        # Find corresponding Athena table if offline store is enabled
+                        athena_table = _find_athena_table(config, fg['FeatureGroupName']) if offline_config else 'N/A'
+                        
                         # Determine ingest mode based on store configuration
                         ingest_mode = []
                         if online_config:
@@ -57,6 +60,7 @@ def list_feature_groups(config: Config, output_format: str) -> None:
                             'CreationTime': fg['CreationTime'].strftime('%Y-%m-%d %H:%M:%S') if fg.get('CreationTime') else '',
                             'OfflineS3Uri': offline_s3_uri,
                             'TableFormat': offline_table_format,
+                            'AthenaTable': athena_table,
                             'OnlineStoreConfig': online_config,
                             'OfflineStoreConfig': offline_config
                         })
@@ -80,3 +84,51 @@ def list_feature_groups(config: Config, output_format: str) -> None:
     except Exception as e:
         click.echo(f"예상치 못한 오류: {e}", err=True)
         raise click.Abort()
+
+
+def _find_athena_table(config: Config, feature_group_name: str, database: str = 'sagemaker_featurestore') -> str:
+    """Feature Group에 대응하는 Athena 테이블 이름 찾기"""
+    try:
+        athena_client = config.session.client('athena')
+        
+        # 가능한 테이블 이름 패턴들
+        try:
+            account_id = config.session.client('sts').get_caller_identity()['Account']
+        except:
+            account_id = ''
+            
+        table_name_patterns = [
+            feature_group_name.replace('-', '_'),
+            feature_group_name.lower().replace('-', '_'),
+            f"{feature_group_name.replace('-', '_')}_{account_id}",
+            f"{feature_group_name.lower().replace('-', '_')}_{account_id}"
+        ]
+        
+        # 실제 테이블 목록 조회
+        try:
+            response = athena_client.list_table_metadata(
+                CatalogName='AwsDataCatalog',
+                DatabaseName=database
+            )
+            
+            existing_tables = [table['Name'] for table in response.get('TableMetadataList', [])]
+            
+            # 정확한 매칭 먼저 시도
+            for pattern in table_name_patterns:
+                for table_name in existing_tables:
+                    if pattern.lower() == table_name.lower():
+                        return f"{database}.{table_name}"
+            
+            # 부분 매칭 시도
+            feature_group_base = feature_group_name.replace('-', '_').lower()
+            for table_name in existing_tables:
+                if feature_group_base in table_name.lower():
+                    return f"{database}.{table_name}"
+                    
+        except Exception:
+            pass
+            
+        return 'Table not found'
+        
+    except Exception:
+        return 'Unable to check'

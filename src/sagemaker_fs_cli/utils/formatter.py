@@ -39,6 +39,7 @@ class OutputFormatter:
             'EventTimeFeature',
             'RecordIdFeature',
             'TableFormat',
+            'AthenaTable',
             'CreationTime'
         ]
         formatted_data = []
@@ -53,6 +54,7 @@ class OutputFormatter:
                 'EventTimeFeature': fg.get('EventTimeFeatureName', 'N/A'),
                 'RecordIdFeature': fg.get('RecordIdentifierFeatureName', 'N/A'),
                 'TableFormat': fg.get('TableFormat', 'N/A'),
+                'AthenaTable': fg.get('AthenaTable', 'N/A'),
                 'CreationTime': fg.get('CreationTime', '')
             })
         
