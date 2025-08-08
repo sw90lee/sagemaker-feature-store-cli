@@ -19,6 +19,7 @@ from tqdm import tqdm
 @click.option('--event-time-feature-name', default='event_time', help='이벤트 시간 필드명 (기본값: event_time)')
 @click.option('--schema-file', type=click.Path(exists=True), required=True, help='스키마 정의 JSON 파일 경로 (필수)')
 @click.option('--online-store/--no-online-store', default=True, help='Online store 활성화 여부 (기본값: True)')
+@click.option('--ttl-duration', type=int, help='Online store TTL 기간 (단위: 일, 1-365일)')
 @click.option('--offline-store/--no-offline-store', default=True, help='Offline store 활성화 여부 (기본값: True)')
 @click.option('--s3-uri', type=str, help='Offline store S3 URI (offline store 사용시 필수)')
 @click.option('--role-arn', type=str, required=True, help='IAM 역할 ARN (필수)')
@@ -37,6 +38,7 @@ def create(
     event_time_feature_name: str,
     schema_file: str,
     online_store: bool,
+    ttl_duration: Optional[int],
     offline_store: bool,
     s3_uri: Optional[str],
     role_arn: str,
@@ -75,6 +77,7 @@ def create(
         --description "고객 프로필 피처 그룹" \\
         --record-identifier-name customer_id \\
         --event-time-feature-name timestamp \\
+        --ttl-duration 365 \\
         --enable-encryption \\
         --kms-key-id alias/sagemaker-key \\
         --table-format Glue \\
@@ -89,7 +92,7 @@ def create(
         
         # 설정 검증
         _validate_configuration(online_store, offline_store, s3_uri, throughput_mode, 
-                              read_capacity_units, write_capacity_units, enable_encryption, kms_key_id)
+                              read_capacity_units, write_capacity_units, enable_encryption, kms_key_id, ttl_duration)
         
         # 스키마 로드 및 검증
         schema_data = _load_and_validate_schema(schema_file)
@@ -121,6 +124,7 @@ def create(
             throughput_mode=throughput_mode,
             read_capacity_units=read_capacity_units,
             write_capacity_units=write_capacity_units,
+            ttl_duration=ttl_duration,
             tags=parsed_tags
         )
         
@@ -150,7 +154,8 @@ def _validate_configuration(
     read_capacity_units: Optional[int],
     write_capacity_units: Optional[int],
     enable_encryption: bool,
-    kms_key_id: Optional[str]
+    kms_key_id: Optional[str],
+    ttl_duration: Optional[int]
 ):
     """설정값 검증"""
     # 최소 하나의 store는 활성화되어야 함
@@ -172,6 +177,13 @@ def _validate_configuration(
     # 암호화 사용시 KMS 키 확인
     if enable_encryption and not kms_key_id:
         raise click.ClickException("암호화를 활성화할 경우 --kms-key-id를 지정해야 합니다.")
+    
+    # TTL 검증
+    if ttl_duration is not None:
+        if not online_store:
+            raise click.ClickException("TTL은 Online store가 활성화된 경우에만 설정할 수 있습니다.")
+        if ttl_duration < 1 or ttl_duration > 365:
+            raise click.ClickException("TTL 기간은 1-365일 사이여야 합니다.")
 
 
 def _load_and_validate_schema(schema_file: str) -> List[Dict[str, str]]:
@@ -255,6 +267,7 @@ def _create_feature_group_config(
     throughput_mode: str,
     read_capacity_units: Optional[int],
     write_capacity_units: Optional[int],
+    ttl_duration: Optional[int],
     tags: List[Dict[str, str]]
 ) -> Dict[str, Any]:
     """Feature Group 생성 설정 구성"""
@@ -272,13 +285,21 @@ def _create_feature_group_config(
     
     # Online Store 설정
     if online_store:
-        online_store_config = {}
+        online_store_config = {
+            'EnableOnlineStore': True
+        }
         
         if enable_encryption and kms_key_id:
             online_store_config['SecurityConfig'] = {
                 'KmsKeyId': kms_key_id
             }
         
+        # TTL 설정
+        if ttl_duration is not None:
+            online_store_config['TtlDuration'] = {
+                'Unit': 'Days',
+                'Value': ttl_duration
+            }
         
         config['OnlineStoreConfig'] = online_store_config
     
