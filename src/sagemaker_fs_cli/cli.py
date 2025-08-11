@@ -340,5 +340,85 @@ def generate_template(output: str):
     add_features_cmd.generate_feature_template(output)
 
 
+@cli.command('add-feature')
+@click.argument('feature_group_name')
+@click.option('--feature', '-f', multiple=True, required=True,
+              help='Feature 정의 (형식: name:type[:description] 또는 name:type:list:dimension[:description])')
+@click.option('--dry-run', is_flag=True, help='실제 변경 없이 계획만 확인')
+@click.option('--wait/--no-wait', default=True, help='업데이트 완료까지 대기 여부 (기본값: True)')
+@click.pass_context
+def add_feature_flags_command(ctx, feature_group_name: str, feature: tuple, dry_run: bool, wait: bool):
+    """CLI 플래그로 피처 그룹에 feature들을 추가합니다.
+    
+    \b
+    Feature 정의 형식 (벡터/집합은 Iceberg 만 지원):
+      기본 형식: name:type[:description]
+      벡터 형식: name:type:list:dimension[:description]
+      집합 형식: name:type:set[:description]
+    
+    \b
+    지원하는 타입:
+      - String: 문자열 데이터
+      - Integral: 정수형 데이터  
+      - Fractional: 실수형 데이터
+    
+    \b
+    예시:
+      # 기본 feature 추가
+      fs add-feature my-fg -f "age:Integral:사용자 나이" -f "name:String:사용자 이름"
+      
+      # 벡터 feature 추가  
+      fs add-feature my-fg -f "embeddings:String:list:256:텍스트 임베딩"
+      
+      # 집합 feature 추가
+      fs add-feature my-fg -f "tags:String:set:사용자 태그"
+      
+      # 미리보기만 확인
+      fs add-feature my-fg -f "new_field:String" --dry-run
+    """
+    add_features_cmd.add_features_from_flags(feature_group_name, list(feature), dry_run, wait)
+
+
+@cli.command('add-feature-json')
+@click.argument('feature_group_name')
+@click.option('--json', '-j', multiple=True, required=True,
+              help='JSON 형태의 feature 정의')
+@click.option('--dry-run', is_flag=True, help='실제 변경 없이 계획만 확인')
+@click.option('--wait/--no-wait', default=True, help='업데이트 완료까지 대기 여부 (기본값: True)')
+@click.pass_context  
+def add_feature_json_command(ctx, feature_group_name: str, json: tuple, dry_run: bool, wait: bool):
+    """JSON 문자열로 피처 그룹에 feature들을 추가합니다.
+    
+    \b
+    JSON 형식:
+      {"FeatureName": "name", "FeatureType": "String", "Description": "설명"}
+    
+    \b
+    벡터 feature JSON 예시:
+      {
+        "FeatureName": "embeddings",
+        "FeatureType": "String", 
+        "CollectionType": "List",
+        "CollectionConfig": {"VectorConfig": {"Dimension": 128}},
+        "Description": "임베딩 벡터"
+      }
+    
+    \b
+    예시:
+      # 기본 feature 추가
+      fs add-feature-json my-fg \\
+        -j '{"FeatureName": "score", "FeatureType": "Fractional"}' \\
+        -j '{"FeatureName": "category", "FeatureType": "String"}'
+      
+      # 벡터 feature 추가
+      fs add-feature-json my-fg \\
+        -j '{"FeatureName": "vector", "FeatureType": "String", "CollectionType": "List", "CollectionConfig": {"VectorConfig": {"Dimension": 256}}}'
+      
+      # 미리보기만 확인  
+      fs add-feature-json my-fg -j '{"FeatureName": "test", "FeatureType": "String"}' --dry-run
+    """
+    add_features_cmd.add_features_from_json_strings(feature_group_name, list(json), dry_run, wait)
+
+
 if __name__ == '__main__':
     cli()
