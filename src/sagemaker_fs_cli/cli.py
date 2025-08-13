@@ -284,140 +284,149 @@ def analyze_feature_store(ctx, feature_group_name: Optional[str], bucket: Option
 
 @cli.command('add-features')
 @click.argument('feature_group_name')
-@click.argument('features_file')
-@click.option('--dry-run', is_flag=True, help='실제 변경 없이 계획만 확인')
-@click.option('--wait/--no-wait', default=True, help='업데이트 완료까지 대기 여부 (기본값: True)')
-@click.pass_context
-def add_features_command(ctx, feature_group_name: str, features_file: str, dry_run: bool, wait: bool):
-    """피처 그룹에 새로운 feature들을 추가합니다.
-    
-    \b
-    예시:
-      # 새로운 feature들 추가
-      fs add-features my-feature-group new_features.json
-      
-      # 미리보기만 확인
-      fs add-features my-feature-group new_features.json --dry-run
-      
-      # 백그라운드에서 업데이트
-      fs add-features my-feature-group new_features.json --no-wait
-    """
-    add_features_cmd.add_features(feature_group_name, features_file, dry_run, wait)
-
-
-@cli.command('schema')
-@click.argument('feature_group_name')
-@click.option('--output-format', '-o', type=click.Choice(['table', 'json']), default='table',
-              help='출력 형식')
-@click.pass_context
-def show_schema(ctx, feature_group_name: str, output_format: str):
-    """피처 그룹의 현재 스키마 조회
-    
-    \b
-    예시:
-      # 테이블 형태로 스키마 출력
-      fs schema my-feature-group
-      
-      # JSON 형태로 스키마 출력
-      fs schema my-feature-group --output-format json
-    """
-    add_features_cmd.show_schema(feature_group_name, output_format)
-
-
-@cli.command('schema-template')
-@click.option('--output', '-o', default='feature_template.json', help='출력 파일 경로')
-def generate_template(output: str):
-    """새로운 feature definition 템플릿 파일 생성
-    
-    \b
-    예시:
-      # 기본 템플릿 생성
-      fs schema-template
-      
-      # 특정 파일명으로 템플릿 생성
-      fs schema-template --output my_features.json
-    """
-    add_features_cmd.generate_feature_template(output)
-
-
-@cli.command('add-feature')
-@click.argument('feature_group_name')
-@click.option('--feature', '-f', multiple=True, required=True,
+@click.argument('features_file', required=False)
+@click.option('--feature', '-f', multiple=True,
               help='Feature 정의 (형식: name:type[:description] 또는 name:type:list:dimension[:description])')
+@click.option('--json', '-j', multiple=True,
+              help='JSON 형태의 feature 정의')
 @click.option('--dry-run', is_flag=True, help='실제 변경 없이 계획만 확인')
 @click.option('--wait/--no-wait', default=True, help='업데이트 완료까지 대기 여부 (기본값: True)')
 @click.pass_context
-def add_feature_flags_command(ctx, feature_group_name: str, feature: tuple, dry_run: bool, wait: bool):
-    """CLI 플래그로 피처 그룹에 feature들을 추가합니다.
+def add_features_command(ctx, feature_group_name: str, features_file: str, feature: tuple, json: tuple, dry_run: bool, wait: bool):
+    """피처 그룹에 새로운 feature들을 추가합니다 (통합 명령어).
+    
+    세 가지 방식을 지원합니다:
+    
+    \b
+    1. JSON 파일 방식:
+       fs add-features my-fg features.json
+    
+    \b
+    2. CLI 플래그 방식:
+       fs add-features my-fg -f "name:String:설명" -f "score:Fractional"
+    
+    \b
+    3. JSON 문자열 방식:
+       fs add-features my-fg -j '{"FeatureName": "name", "FeatureType": "String"}'
     
     \b
     Feature 정의 형식 (벡터/집합은 Iceberg 만 지원):
       기본 형식: name:type[:description]
-      벡터 형식: name:type:list:dimension[:description]
+      벡터 형식: name:type:list:dimension[:description]  
       집합 형식: name:type:set[:description]
     
     \b
-    지원하는 타입:
-      - String: 문자열 데이터
-      - Integral: 정수형 데이터  
-      - Fractional: 실수형 데이터
-    
-    \b
     예시:
-      # 기본 feature 추가
-      fs add-feature my-fg -f "age:Integral:사용자 나이" -f "name:String:사용자 이름"
+      # JSON 파일로 추가
+      fs add-features my-fg new_features.json
       
-      # 벡터 feature 추가  
-      fs add-feature my-fg -f "embeddings:String:list:256:텍스트 임베딩"
+      # CLI 플래그로 추가
+      fs add-features my-fg -f "user_score:Fractional:사용자 점수" -f "status:String"
       
-      # 집합 feature 추가
-      fs add-feature my-fg -f "tags:String:set:사용자 태그"
+      # JSON 문자열로 추가
+      fs add-features my-fg -j '{"FeatureName": "conversion_rate", "FeatureType": "Fractional"}'
       
       # 미리보기만 확인
-      fs add-feature my-fg -f "new_field:String" --dry-run
+      fs add-features my-fg features.json --dry-run
+      
+      # 백그라운드 실행
+      fs add-features my-fg -f "new_field:String" --no-wait
     """
-    add_features_cmd.add_features_from_flags(feature_group_name, list(feature), dry_run, wait)
+    # 입력 방식 검증
+    input_methods = sum([
+        bool(features_file),
+        bool(feature),
+        bool(json)
+    ])
+    
+    if input_methods == 0:
+        click.echo("❌ Feature 정의가 필요합니다. 다음 중 하나를 선택하세요:", err=True)
+        click.echo("  - JSON 파일: fs add-features my-fg features.json", err=True)
+        click.echo("  - CLI 플래그: fs add-features my-fg -f 'name:type:설명'", err=True)
+        click.echo("  - JSON 문자열: fs add-features my-fg -j '{\"FeatureName\": \"name\", \"FeatureType\": \"String\"}'", err=True)
+        raise click.Abort()
+    
+    if input_methods > 1:
+        click.echo("❌ 한 번에 하나의 입력 방식만 사용할 수 있습니다.", err=True)
+        click.echo("  사용된 방식:", err=True)
+        if features_file:
+            click.echo(f"    - JSON 파일: {features_file}", err=True)
+        if feature:
+            click.echo(f"    - CLI 플래그: {len(feature)}개", err=True)
+        if json:
+            click.echo(f"    - JSON 문자열: {len(json)}개", err=True)
+        raise click.Abort()
+    
+    # 입력 방식에 따라 적절한 함수 호출
+    if features_file:
+        # JSON 파일 방식
+        add_features_cmd.add_features(feature_group_name, features_file, dry_run, wait)
+    elif feature:
+        # CLI 플래그 방식
+        add_features_cmd.add_features_from_flags(feature_group_name, list(feature), dry_run, wait)
+    elif json:
+        # JSON 문자열 방식
+        add_features_cmd.add_features_from_json_strings(feature_group_name, list(json), dry_run, wait)
 
 
-@cli.command('add-feature-json')
-@click.argument('feature_group_name')
-@click.option('--json', '-j', multiple=True, required=True,
-              help='JSON 형태의 feature 정의')
-@click.option('--dry-run', is_flag=True, help='실제 변경 없이 계획만 확인')
-@click.option('--wait/--no-wait', default=True, help='업데이트 완료까지 대기 여부 (기본값: True)')
-@click.pass_context  
-def add_feature_json_command(ctx, feature_group_name: str, json: tuple, dry_run: bool, wait: bool):
-    """JSON 문자열로 피처 그룹에 feature들을 추가합니다.
+@cli.command('schema')
+@click.argument('feature_group_name', required=False)
+@click.option('--output-format', '-o', type=click.Choice(['table', 'json']), default='table',
+              help='출력 형식 (스키마 조회용)')
+@click.option('--template', is_flag=True, help='Feature definition 템플릿 파일 생성')
+@click.option('--template-output', default='feature_template.json', help='템플릿 출력 파일 경로')
+@click.pass_context
+def schema_command(ctx, feature_group_name: str, output_format: str, template: bool, template_output: str):
+    """피처 그룹의 스키마 조회 또는 템플릿 생성 (통합 명령어).
+    
+    두 가지 모드를 지원합니다:
     
     \b
-    JSON 형식:
-      {"FeatureName": "name", "FeatureType": "String", "Description": "설명"}
+    1. 스키마 조회 모드:
+       fs schema <feature-group-name> [옵션]
     
-    \b
-    벡터 feature JSON 예시:
-      {
-        "FeatureName": "embeddings",
-        "FeatureType": "String", 
-        "CollectionType": "List",
-        "CollectionConfig": {"VectorConfig": {"Dimension": 128}},
-        "Description": "임베딩 벡터"
-      }
+    \b  
+    2. 템플릿 생성 모드:
+       fs schema --template [옵션]
     
     \b
     예시:
-      # 기본 feature 추가
-      fs add-feature-json my-fg \\
-        -j '{"FeatureName": "score", "FeatureType": "Fractional"}' \\
-        -j '{"FeatureName": "category", "FeatureType": "String"}'
+      # 스키마 조회 (테이블 형태)
+      fs schema my-feature-group
       
-      # 벡터 feature 추가
-      fs add-feature-json my-fg \\
-        -j '{"FeatureName": "vector", "FeatureType": "String", "CollectionType": "List", "CollectionConfig": {"VectorConfig": {"Dimension": 256}}}'
+      # 스키마 조회 (JSON 형태)
+      fs schema my-feature-group --output-format json
       
-      # 미리보기만 확인  
-      fs add-feature-json my-fg -j '{"FeatureName": "test", "FeatureType": "String"}' --dry-run
+      # 템플릿 생성 (기본 파일명)
+      fs schema --template
+      
+      # 템플릿 생성 (사용자 정의 파일명)
+      fs schema --template --template-output my_features.json
     """
-    add_features_cmd.add_features_from_json_strings(feature_group_name, list(json), dry_run, wait)
+    # 입력 모드 검증
+    if template and feature_group_name:
+        click.echo("❌ 스키마 조회와 템플릿 생성을 동시에 할 수 없습니다.", err=True)
+        click.echo("  - 스키마 조회: fs schema <feature-group-name>", err=True)
+        click.echo("  - 템플릿 생성: fs schema --template", err=True)
+        raise click.Abort()
+    
+    if not template and not feature_group_name:
+        click.echo("❌ Feature Group 이름이 필요하거나 --template 옵션을 사용하세요.", err=True)
+        click.echo("  - 스키마 조회: fs schema <feature-group-name>", err=True)
+        click.echo("  - 템플릿 생성: fs schema --template", err=True)
+        raise click.Abort()
+    
+    # 모드에 따라 적절한 함수 호출
+    if template:
+        # 템플릿 생성 모드
+        add_features_cmd.generate_feature_template(template_output)
+    else:
+        # 스키마 조회 모드
+        add_features_cmd.show_schema(feature_group_name, output_format)
+
+
+
+
 
 
 if __name__ == '__main__':
