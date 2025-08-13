@@ -155,22 +155,24 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     # Submit all tasks for this batch
                     future_to_idx = {
-                        executor.submit(_put_single_formatted_record, config, feature_group_name, record): idx
+                        executor.submit(_put_single_formatted_record, config, feature_group_name, record): (idx, batch_idx + idx)
                         for idx, record in enumerate(formatted_records)
                     }
                     
                     # Collect results
                     for future in as_completed(future_to_idx):
-                        idx = future_to_idx[future]
+                        batch_idx_info, global_idx = future_to_idx[future]
                         try:
                             result = future.result()
                             batch_results.append({
-                                'record_id': f'batch_{batch_num}_record_{idx+1}',
+                                'record_id': f'batch_{batch_num}_record_{batch_idx_info+1}',
+                                'global_index': global_idx,
                                 'status': 'success'
                             })
                         except Exception as e:
                             batch_results.append({
-                                'record_id': f'batch_{batch_num}_record_{idx+1}',
+                                'record_id': f'batch_{batch_num}_record_{batch_idx_info+1}',
+                                'global_index': global_idx,
                                 'error': str(e)
                             })
                 
@@ -218,20 +220,12 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
             try:
                 # Get successful input records for bulk-get style output
                 successful_input_records = []
-                for result in results:
-                    if result.get('status') == 'success':
-                        # Find the original input record that corresponds to this successful result
-                        record_id = result.get('record_id')
-                        for input_record in valid_records:
-                            # Match by record_id or first available identifier
-                            input_record_id = (input_record.get('record_id') or 
-                                             input_record.get('id') or 
-                                             input_record.get('RecordIdentifier') or 
-                                             str(next(iter(input_record.values()))) if input_record else None)
-                            
-                            if str(input_record_id) == record_id:
-                                successful_input_records.append(input_record)
-                                break
+                for result in all_results:
+                    if result.get('status') == 'success' and 'global_index' in result:
+                        # Use the global index to get the corresponding input record
+                        global_idx = result['global_index']
+                        if global_idx < len(valid_records):
+                            successful_input_records.append(valid_records[global_idx])
                 
                 # Create comprehensive result with both summary and data
                 result_output = {
