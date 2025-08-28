@@ -678,6 +678,8 @@ class SageMakerFeatureStoreUpdater:
                     if time_format == 'auto':
                         if re.match(r'\d{4}-\d{2}-\d{2}', time_str):
                             dt = datetime.strptime(time_str, '%Y-%m-%d')
+                        elif re.match(r'\d{14}', time_str):  # YYYYMMDDHHMMSS
+                            dt = datetime.strptime(time_str, '%Y%m%d%H%M%S')
                         elif re.match(r'\d{8}', time_str):
                             dt = datetime.strptime(time_str, '%Y%m%d')
                         elif re.match(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}', time_str):
@@ -822,7 +824,10 @@ def batch_update(config, feature_group_name: str, column_name: str,
             transform_function = updater.create_transform_function(transform_type, **(transform_options or {}))
         
         # 변경 대상 레코드 수 확인
-        if column_name in sample_df.columns:  # 기존 컬럼인 경우에만 레코드 수 계산
+        if transform_function:
+            click.echo("=== 변환 함수 기반 업데이트 ===")
+            total_target_count = "변환 함수 적용 대상"
+        elif column_name in sample_df.columns:  # 기존 컬럼인 경우에만 레코드 수 계산
             click.echo("=== 변경 대상 레코드 수 계산 ===")
             count_result = updater.count_matching_records(
                 column_name=column_name,
