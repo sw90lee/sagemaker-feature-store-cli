@@ -3,7 +3,7 @@
 import click
 from typing import Optional
 from .config import Config
-from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd, export_cmd, analyze_cmd, add_features_cmd
+from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd, export_cmd, analyze_cmd, add_features_cmd, batch_update_cmd
 
 
 @click.group()
@@ -11,7 +11,7 @@ from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, cl
 @click.option('--region', help='사용할 AWS 리전')
 @click.pass_context
 def cli(ctx, profile: Optional[str], region: Optional[str]):
-    """SageMaker FeatureStore CLI - 온라인/오프라인 피처 스토어 관리 도구"""
+    """SageMaker FeatureStore CLI - 오프라인 피처 스토어 전용 관리 도구"""
     ctx.ensure_object(dict)
     ctx.obj['config'] = Config(profile=profile, region=region)
 
@@ -21,7 +21,7 @@ def cli(ctx, profile: Optional[str], region: Optional[str]):
               help='출력 형식')
 @click.pass_context
 def list_feature_groups(ctx, output_format: str):
-    """모든 피처 그룹 목록 조회 (온라인/오프라인)
+    """모든 피처 그룹 목록 조회 (오프라인 스토어)
     
     \b
     예시:
@@ -44,11 +44,11 @@ def list_feature_groups(ctx, output_format: str):
 @click.pass_context
 def get_record(ctx, feature_group_name: str, record_identifier_value: str, 
                feature_names: Optional[str], output_format: str):
-    """피처 그룹에서 단일 레코드 조회
+    """오프라인 스토어(Athena)에서 단일 레코드 조회
     
     \b
     예시:
-      # 기본 조회
+      # 오프라인 스토어에서 기본 조회
       fs get my-feature-group record-id-123
       
       # 특정 피처만 조회
@@ -68,11 +68,11 @@ def get_record(ctx, feature_group_name: str, record_identifier_value: str,
 @click.option('--record', required=True, help='저장할 레코드의 JSON 문자열')
 @click.pass_context
 def put_record(ctx, feature_group_name: str, record: str):
-    """피처 그룹에 단일 레코드 저장
+    """오프라인 스토어(S3)에 단일 레코드 저장
     
     \b
     예시:
-      # 단일 레코드 저장
+      # 오프라인 스토어에 단일 레코드 저장
       fs put my-feature-group \\
         --record '{"feature1": "value1", "feature2": "value2", "record_id": "123"}'
     """
@@ -89,11 +89,11 @@ def put_record(ctx, feature_group_name: str, record: str):
 @click.pass_context
 def bulk_get_records(ctx, feature_group_name: str, input_file: str, 
                     output_file: Optional[str], feature_names: Optional[str], current_time: bool):
-    """입력 파일(JSON/CSV)을 사용하여 피처 그룹에서 대량 레코드 조회
+    """입력 파일(JSON/CSV)을 사용하여 오프라인 스토어(Athena)에서 대량 레코드 조회
     
     \b
     예시:
-      # JSON 파일에서 레코드 ID 목록을 읽어 조회
+      # 오프라인 스토어에서 JSON 파일의 레코드 ID 목록으로 조회
       fs bulk-get my-feature-group input_ids.json
       
       # 결과를 파일로 저장
@@ -123,11 +123,11 @@ def bulk_get_records(ctx, feature_group_name: str, input_file: str,
 @click.option('--batch-size', default=100, help='배치 처리 크기 (기본값: 100, 최대 1000 권장)')
 @click.pass_context
 def bulk_put_records(ctx, feature_group_name: str, input_file: str, output_file: Optional[str], batch_size: int):
-    """입력 파일(JSON/CSV)을 사용하여 피처 그룹에 대량 레코드 저장
+    """입력 파일(JSON/CSV)을 사용하여 오프라인 스토어(S3)에 대량 레코드 저장
     
     \b
     예시:
-      # JSON 파일에서 레코드들을 읽어 업데이트
+      # 오프라인 스토어에 JSON 파일의 레코드들을 업로드
       fs bulk-put my-feature-group records.json
       
       # CSV 파일 사용
@@ -425,8 +425,170 @@ def schema_command(ctx, feature_group_name: str, output_format: str, template: b
         add_features_cmd.show_schema(feature_group_name, output_format)
 
 
-
-
+@cli.command('batch-update')
+@click.argument('feature_group_name')
+@click.option('--column', required=True, help='업데이트할 컬럼명')
+@click.option('--old-value', help='변경할 기존 값 (단일 값 변경용)')
+@click.option('--new-value', help='새로운 값 (단일 값 변경용)')
+@click.option('--mapping-file', help='매핑 파일 경로 (.json 또는 .csv)')
+@click.option('--conditional-mapping', help='조건부 매핑 JSON 문자열')
+@click.option('--transform-function', type=click.Choice(['regex_replace', 'prefix_suffix', 'uppercase', 'lowercase', 'copy_from_column', 'extract_time_prefix']),
+              help='변환 함수 타입')
+@click.option('--regex-pattern', help='정규식 패턴 (transform-function=regex_replace 시 필요)')
+@click.option('--regex-replacement', default='', help='정규식 치환 문자열 (기본값: 빈 문자열)')
+@click.option('--prefix', default='', help='접두사 (transform-function=prefix_suffix 시)')
+@click.option('--suffix', default='', help='접미사 (transform-function=prefix_suffix 시)')
+@click.option('--source-column', help='복사할 원본 컬럼명 (transform-function=copy_from_column 시 필요)')
+@click.option('--prefix-pattern', default=r'(\d{4}-\d{2}-\d{2})', help='시간 추출용 정규식 패턴 (extract_time_prefix 시 사용)')
+@click.option('--time-format', default='auto', help='시간 형식 (extract_time_prefix 시 사용, 기본값: auto)')
+@click.option('--to-iso/--no-to-iso', default=True, help='추출된 시간을 ISO 형식으로 변환 (extract_time_prefix 시 사용)')
+@click.option('--dry-run', is_flag=True, default=True, help='실제 실행하지 않고 테스트만 수행 (기본값: True)')
+@click.option('--no-dry-run', is_flag=True, help='실제로 데이터를 업데이트')
+@click.option('--skip-validation', is_flag=True, help='Athena 검증 건너뛰기')
+@click.option('--filter-column', help='추가 필터 컬럼명')
+@click.option('--filter-value', help='추가 필터 값')
+@click.option('--cleanup-backups', is_flag=True, help='백업 파일 자동 정리')
+@click.option('--batch-size', default=1000, help='배치 크기 (기본값: 1000)')
+@click.pass_context
+def batch_update_feature_store(ctx, feature_group_name: str, column: str,
+                              old_value: Optional[str], new_value: Optional[str],
+                              mapping_file: Optional[str], conditional_mapping: Optional[str],
+                              transform_function: Optional[str], regex_pattern: Optional[str], 
+                              regex_replacement: str, prefix: str, suffix: str, 
+                              source_column: Optional[str], prefix_pattern: str,
+                              time_format: str, to_iso: bool,
+                              dry_run: bool, no_dry_run: bool, skip_validation: bool,
+                              filter_column: Optional[str], filter_value: Optional[str],
+                              cleanup_backups: bool, batch_size: int):
+    """피처 그룹의 오프라인 스토어 데이터를 대량으로 업데이트
+    
+    다양한 업데이트 방식을 지원합니다:
+    
+    \b
+    1. 단일 값 변경:
+       fs batch-update my-fg --column status --old-value "old" --new-value "new"
+    
+    \b
+    2. 매핑 파일 사용:
+       fs batch-update my-fg --column status --mapping-file mapping.json
+    
+    \b
+    3. 조건부 매핑:
+       fs batch-update my-fg --column status --conditional-mapping '{"category": {"A": {"old1": "new1"}}}'
+    
+    \b
+    예시:
+      # 단일 값 변경 (테스트)
+      fs batch-update my-fg --column RB_Result --old-value "ABNORMAL" --new-value "NORMAL"
+      
+      # 실제 변경 실행
+      fs batch-update my-fg --column RB_Result --old-value "ABNORMAL" --new-value "NORMAL" --no-dry-run
+      
+      # 매핑 파일로 여러 값 변경
+      fs batch-update my-fg --column status --mapping-file value_mapping.json --no-dry-run
+      
+      # 조건부 매핑
+      fs batch-update my-fg --column result --conditional-mapping '{"category": {"A": {"old": "new"}}}' --no-dry-run
+      
+      # 필터 조건 적용
+      fs batch-update my-fg --column status --old-value "old" --new-value "new" \\
+        --filter-column region --filter-value "us-east-1" --no-dry-run
+    
+    ⚠️ 주의사항:
+      - 기본적으로 --dry-run 모드로 실행됩니다
+      - 실제 변경을 위해서는 --no-dry-run 플래그를 사용하세요
+      - 변경 전 자동으로 백업이 생성됩니다
+      - 대용량 데이터의 경우 시간이 오래 걸릴 수 있습니다
+    """
+    # dry-run 로직 처리
+    if no_dry_run:
+        dry_run = False
+    
+    # 입력 검증
+    input_methods = sum([
+        bool(old_value and new_value),
+        bool(mapping_file),
+        bool(conditional_mapping),
+        bool(transform_function)
+    ])
+    
+    if input_methods == 0:
+        click.echo("❌ 업데이트 방식을 선택해야 합니다:", err=True)
+        click.echo("  - 단일 값: --old-value 'old' --new-value 'new'", err=True)
+        click.echo("  - 매핑 파일: --mapping-file mapping.json", err=True)
+        click.echo("  - 조건부 매핑: --conditional-mapping '{...}'", err=True)
+        click.echo("  - 변환 함수: --transform-function regex_replace", err=True)
+        raise click.Abort()
+    
+    if input_methods > 1:
+        click.echo("❌ 한 번에 하나의 업데이트 방식만 사용할 수 있습니다.", err=True)
+        raise click.Abort()
+    
+    if old_value and not new_value:
+        click.echo("❌ --old-value를 사용할 때는 --new-value도 필요합니다.", err=True)
+        raise click.Abort()
+    
+    if new_value and not old_value:
+        click.echo("❌ --new-value를 사용할 때는 --old-value도 필요합니다.", err=True)
+        raise click.Abort()
+    
+    if batch_size <= 0 or batch_size > 10000:
+        click.echo("❌ 배치 크기는 1-10000 사이여야 합니다.", err=True)
+        raise click.Abort()
+    
+    # 변환 함수별 추가 검증
+    if transform_function:
+        if transform_function == 'regex_replace' and not regex_pattern:
+            click.echo("❌ regex_replace 변환에는 --regex-pattern이 필요합니다.", err=True)
+            raise click.Abort()
+        
+        if transform_function == 'copy_from_column' and not source_column:
+            click.echo("❌ copy_from_column 변환에는 --source-column이 필요합니다.", err=True)
+            raise click.Abort()
+    
+    # 변환 함수 옵션 준비
+    transform_options = {}
+    if transform_function:
+        if transform_function == 'regex_replace':
+            transform_options = {
+                'pattern': regex_pattern,
+                'replacement': regex_replacement
+            }
+        elif transform_function == 'prefix_suffix':
+            transform_options = {
+                'prefix': prefix,
+                'suffix': suffix
+            }
+        elif transform_function == 'copy_from_column':
+            transform_options = {
+                'source_column': source_column
+            }
+        elif transform_function == 'extract_time_prefix':
+            transform_options = {
+                'time_format': time_format,
+                'prefix_pattern': prefix_pattern,
+                'to_iso': to_iso,
+                'source_column': source_column
+            }
+    
+    config = ctx.obj['config']
+    batch_update_cmd.batch_update(
+        config=config,
+        feature_group_name=feature_group_name,
+        column_name=column,
+        old_value=old_value,
+        new_value=new_value,
+        mapping_file=mapping_file,
+        conditional_mapping=conditional_mapping,
+        transform_type=transform_function,
+        transform_options=transform_options,
+        dry_run=dry_run,
+        skip_validation=skip_validation,
+        filter_column=filter_column,
+        filter_value=filter_value,
+        cleanup_backups=cleanup_backups,
+        batch_size=batch_size
+    )
 
 
 if __name__ == '__main__':

@@ -36,6 +36,7 @@ from ..config import Config
 @click.option('--add-event-time', is_flag=True, help='EventTime 필드 자동 추가/변환')
 @click.option('--record-identifier', help='레코드 식별자 필드명 지정')
 @click.option('--dry-run', is_flag=True, help='실제 내보내기 없이 쿼리 및 예상 결과만 표시')
+@click.option('--deduplicate', is_flag=True, help='중복된 레코드 제거 (filename 기준으로 최신 write_time 레코드만)')
 @click.pass_context
 def export(
     ctx,
@@ -54,7 +55,8 @@ def export(
     column_mapping: Optional[str],
     add_event_time: bool,
     record_identifier: Optional[str],
-    dry_run: bool
+    dry_run: bool,
+    deduplicate: bool
 ):
     """Offline Store에서 Feature Group 데이터를 파일로 내보내기합니다.
     
@@ -93,6 +95,9 @@ def export(
       
       # 내보내기 계획만 확인
       fs export my-feature-group data.csv --dry-run
+      
+      # 중복된 레코드 제거하여 내보내기
+      fs export my-feature-group unique_data.csv --deduplicate
     """
     try:
         config = ctx.obj['config']
@@ -117,8 +122,12 @@ def export(
         click.echo(f"✓ Feature Group 검증 완료: {feature_group_name}")
         click.echo(f"✓ Athena 테이블 확인: {database}.{table_name}")
         
+        # 테이블 컬럼 정보 조회
+        table_columns = _get_table_columns(config, database, table_name)
+        click.echo(f"✓ 테이블 스키마 조회 완료 ({len(table_columns)} 컬럼)")
+        
         # SQL 쿼리 생성
-        query = _build_query(database, table_name, columns, where, order_by, limit)
+        query = _build_query(database, table_name, columns, where, order_by, limit, deduplicate, table_columns)
         click.echo("✓ 쿼리 생성 완료")
         
         if dry_run:
@@ -295,7 +304,8 @@ def _build_query(
     columns: Optional[str], 
     where: Optional[str], 
     order_by: Optional[str], 
-    limit: Optional[int]
+    limit: Optional[int],
+    deduplicate: bool = False
 ) -> str:
     """SQL 쿼리 동적 생성"""
     
@@ -306,19 +316,39 @@ def _build_query(
     else:
         select_clause = '*'
     
-    # 기본 쿼리
-    query = f'SELECT {select_clause} FROM "{database}"."{table_name}"'
+    # 중복 제거 처리
+    if deduplicate:
+        # ROW_NUMBER 윈도우 함수를 사용한 중복 제거 쿼리
+        subquery = f'SELECT {select_clause}, ROW_NUMBER() OVER (PARTITION BY filename ORDER BY write_time DESC) as rn FROM "{database}"."{table_name}"'
+        
+        # WHERE 절을 서브쿼리에 적용
+        if where:
+            where_clause = where.strip()
+            if not where_clause.upper().startswith('WHERE'):
+                where_clause = f"WHERE {where_clause}"
+            subquery += f" {where_clause}"
+        
+        # 외부 쿼리에서 rn = 1인 레코드만 선택
+        query = f'SELECT * FROM ({subquery}) WHERE rn = 1'
+        
+        # rn 컬럼 제거
+        if select_clause == '*':
+            # 모든 컬럼 선택시 rn 컬럼만 제외
+            query = f'SELECT time, filename, category, rh_barcode, order_cnt, order_sum, hfeq_cnt, hfeq_sum, first_order, ssc_score, rb_result, dl_result, labeling, usage, folder_date, rawpath, f_256_128, f_512_256, f_1024_512, f_2048_512, f_2048_1024, image, wav, origin_time, change_reason, model_name, write_time, api_invocation_time, is_deleted FROM ({subquery}) WHERE rn = 1'
+        
+    else:
+        # 기본 쿼리 (중복 제거 없음)
+        query = f'SELECT {select_clause} FROM "{database}"."{table_name}"'
+        
+        # WHERE 절
+        if where:
+            where_clause = where.strip()
+            if not where_clause.upper().startswith('WHERE'):
+                where_clause = f"WHERE {where_clause}"
+            query += f" {where_clause}"
     
-    # WHERE 절
-    if where:
-        # WHERE 키워드가 이미 포함되어 있는지 확인
-        where_clause = where.strip()
-        if not where_clause.upper().startswith('WHERE'):
-            where_clause = f"WHERE {where_clause}"
-        query += f" {where_clause}"
-    
-    # ORDER BY 절
-    if order_by:
+    # ORDER BY 절 (중복 제거가 아닌 경우에만)
+    if order_by and not deduplicate:
         order_clause = order_by.strip()
         if not order_clause.upper().startswith('ORDER BY'):
             order_clause = f"ORDER BY {order_clause}"

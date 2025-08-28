@@ -1,77 +1,21 @@
-"""Bulk put command implementation"""
+"""Bulk put command implementation for offline store"""
 
 import click
 import os
 import time
+import json
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from botocore.exceptions import ClientError
+from urllib.parse import urlparse
 from ..config import Config
 from ..utils.file_handler import FileHandler
 
 
-def put_single_record(config: Config, feature_group_name: str, record_data: Dict[str, Any], 
-                     feature_definitions: Dict[str, Dict]) -> Dict[str, Any]:
-    """Put a single record (helper function for bulk operations)"""
-    try:
-        # Add EventTime if not provided
-        if 'EventTime' not in record_data:
-            record_data['EventTime'] = str(int(time.time()))
-        
-        # Format record for SageMaker FeatureStore
-        formatted_record = []
-        record_id = None
-        
-        for feature_name, value in record_data.items():
-            if feature_name not in feature_definitions:
-                continue
-            
-            formatted_record.append({
-                'FeatureName': feature_name,
-                'ValueAsString': str(value)
-            })
-            
-            # Try to identify record identifier
-            if not record_id and feature_name.lower() in ['record_id', 'id', 'record_identifier']:
-                record_id = str(value)
-        
-        if not record_id:
-            # Use first feature value as record_id for tracking
-            record_id = str(next(iter(record_data.values()))) if record_data else 'unknown'
-        
-        if not formatted_record:
-            return {'record_id': record_id, 'error': 'No valid features found'}
-        
-        # Put the record
-        response = config.featurestore_runtime.put_record(
-            FeatureGroupName=feature_group_name,
-            Record=formatted_record
-        )
-        
-        return {
-            'record_id': record_id,
-            'status': 'success',
-            'request_id': response.get('ResponseMetadata', {}).get('RequestId')
-        }
-        
-    except ClientError as e:
-        return {'record_id': record_id or 'unknown', 'error': str(e)}
-    except Exception as e:
-        return {'record_id': record_id or 'unknown', 'error': f'Unexpected error: {str(e)}'}
-
-
-def _put_single_formatted_record(config: Config, feature_group_name: str, formatted_record: List[Dict]) -> Dict[str, Any]:
-    """Put a single formatted record (helper for batch processing)"""
-    response = config.featurestore_runtime.put_record(
-        FeatureGroupName=feature_group_name,
-        Record=formatted_record
-    )
-    return response
-
-
 def bulk_put_records(config: Config, feature_group_name: str, input_file: str, 
                     output_file: Optional[str] = None, batch_size: int = 100) -> None:
-    """Bulk put records to feature group using input file"""
+    """Bulk put records to offline store (S3) using input file"""
     try:
         # Validate input file exists
         if not os.path.exists(input_file):
@@ -94,9 +38,9 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
             FeatureGroupName=feature_group_name
         )
         
-        # Check if online store is enabled
-        if not fg_details.get('OnlineStoreConfig'):
-            click.echo(f"피처 그룹 '{feature_group_name}'에 온라인 스토어가 활성화되어 있지 않습니다", err=True)
+        # Check if offline store is enabled
+        if not fg_details.get('OfflineStoreConfig'):
+            click.echo(f"피처 그룹 '{feature_group_name}'에 오프라인 스토어가 활성화되어 있지 않습니다", err=True)
             raise click.Abort()
         
         # Prepare feature definitions
@@ -106,10 +50,10 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
         valid_records = []
         for i, record in enumerate(input_data):
             if not isinstance(record, dict):
-                click.echo(f"경고: 레코드 {i+1}이 딕셔너리가 아닙니다. 건너똙니다", err=True)
+                click.echo(f"경고: 레코드 {i+1}이 딕셔너리가 아닙니다. 건너뜀", err=True)
                 continue
             if not record:
-                click.echo(f"경고: 레코드 {i+1}이 비어있습니다. 건너똙니다", err=True)
+                click.echo(f"경고: 레코드 {i+1}이 비어있습니다. 건너뜀", err=True)
                 continue
             valid_records.append(record)
         
@@ -117,11 +61,18 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
             click.echo("입력 파일에서 유효한 레코드를 찾을 수 없습니다", err=True)
             raise click.Abort()
         
-        click.echo(f"{len(valid_records)}개 레코드를 배치 크기 {batch_size}로 처리 중...")
+        click.echo(f"{len(valid_records)}개 레코드를 배치 크기 {batch_size}로 S3에 업로드 중...")
         
-        # Process records in batches using batch_put_record
+        # Process records in batches and upload to S3
         all_results = []
         total_batches = (len(valid_records) + batch_size - 1) // batch_size
+        
+        # Get S3 configuration
+        offline_config = fg_details['OfflineStoreConfig']
+        s3_uri = offline_config['S3StorageConfig']['S3Uri']
+        parsed_uri = urlparse(s3_uri)
+        bucket_name = parsed_uri.netloc
+        prefix = parsed_uri.path.lstrip('/')
         
         for batch_idx in range(0, len(valid_records), batch_size):
             batch_records = valid_records[batch_idx:batch_idx + batch_size]
@@ -129,51 +80,10 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
             
             click.echo(f"배치 {batch_num}/{total_batches} 처리 중... ({len(batch_records)}개 레코드)")
             
-            # Format records for batch_put_record
-            formatted_records = []
-            for record in batch_records:
-                formatted_record = []
-                for feature_name, value in record.items():
-                    if feature_name in feature_definitions:
-                        formatted_record.append({
-                            'FeatureName': feature_name,
-                            'ValueAsString': str(value)
-                        })
-                
-                if formatted_record:  # Only add if we have valid features
-                    formatted_records.append(formatted_record)
-            
-            if not formatted_records:
-                click.echo(f"배치 {batch_num}에서 유효한 레코드가 없습니다. 건너뜀")
-                continue
-            
-            # Execute batch put using ThreadPool for parallel processing
+            # Upload batch to S3
             try:
-                batch_results = []
-                max_workers = min(20, len(formatted_records))  # Increased from 10 to 20
-                
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    # Submit all tasks for this batch
-                    future_to_idx = {
-                        executor.submit(_put_single_formatted_record, config, feature_group_name, record): idx
-                        for idx, record in enumerate(formatted_records)
-                    }
-                    
-                    # Collect results
-                    for future in as_completed(future_to_idx):
-                        idx = future_to_idx[future]
-                        try:
-                            result = future.result()
-                            batch_results.append({
-                                'record_id': f'batch_{batch_num}_record_{idx+1}',
-                                'status': 'success'
-                            })
-                        except Exception as e:
-                            batch_results.append({
-                                'record_id': f'batch_{batch_num}_record_{idx+1}',
-                                'error': str(e)
-                            })
-                
+                batch_results = _upload_batch_to_s3(config, feature_group_name, batch_records, 
+                                                   bucket_name, prefix, batch_num, feature_definitions)
                 all_results.extend(batch_results)
                 
                 # Progress update
@@ -181,7 +91,7 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
                 click.echo(f"완료: {completed_records}/{len(valid_records)}")
                 
             except Exception as e:
-                error_msg = f"배치 {batch_num} 처리 중 오류: {str(e)}"
+                error_msg = f"배치 {batch_num} S3 업로드 중 오류: {str(e)}"
                 click.echo(error_msg, err=True)
                 # Add error results for all records in this batch
                 for idx in range(len(batch_records)):
@@ -195,7 +105,7 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
         error_records = [r for r in all_results if 'error' in r]
         
         # Report results
-        click.echo(f"\n대량 입력 작업 완료:")
+        click.echo(f"\n대량 업로드 작업 완료:")
         click.echo(f"  - 성공: {len(successful_records)}")
         click.echo(f"  - 실패: {len(error_records)}")
         
@@ -208,31 +118,14 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
                 click.echo(f"  ... 그리고 {len(error_records) - 5}개 더 많은 오류")
         
         if successful_records:
-            click.echo(f"\n피처 그룹 '{feature_group_name}'에 {len(successful_records)}개 레코드가 성공적으로 저장되었습니다")
+            click.echo(f"\n피처 그룹 '{feature_group_name}'의 오프라인 스토어(S3)에 {len(successful_records)}개 레코드가 성공적으로 업로드되었습니다")
         else:
-            click.echo("성공적으로 저장된 레코드가 없습니다", err=True)
+            click.echo("성공적으로 업로드된 레코드가 없습니다", err=True)
             raise click.Abort()
         
         # Save results to output file if specified
         if output_file:
             try:
-                # Get successful input records for bulk-get style output
-                successful_input_records = []
-                for result in results:
-                    if result.get('status') == 'success':
-                        # Find the original input record that corresponds to this successful result
-                        record_id = result.get('record_id')
-                        for input_record in valid_records:
-                            # Match by record_id or first available identifier
-                            input_record_id = (input_record.get('record_id') or 
-                                             input_record.get('id') or 
-                                             input_record.get('RecordIdentifier') or 
-                                             str(next(iter(input_record.values()))) if input_record else None)
-                            
-                            if str(input_record_id) == record_id:
-                                successful_input_records.append(input_record)
-                                break
-                
                 # Create comprehensive result with both summary and data
                 result_output = {
                     'summary': {
@@ -244,7 +137,7 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
                         'success_details': successful_records,
                         'error_details': error_records
                     },
-                    'data': successful_input_records
+                    'data': valid_records[:len(successful_records)]  # Only successful records
                 }
                 
                 FileHandler.write_file([result_output], output_file)
@@ -265,3 +158,50 @@ def bulk_put_records(config: Config, feature_group_name: str, input_file: str,
     except Exception as e:
         click.echo(f"예상치 못한 오류: {e}", err=True)
         raise click.Abort()
+
+
+def _upload_batch_to_s3(config: Config, feature_group_name: str, batch_records: List[Dict], 
+                        bucket_name: str, prefix: str, batch_num: int, feature_definitions: Dict) -> List[Dict[str, Any]]:
+    """Upload a batch of records to S3 in offline store format"""
+    s3_client = config.session.client('s3')
+    batch_results = []
+    
+    # Create a batch file
+    timestamp = datetime.now().strftime('%Y/%m/%d/%H')
+    batch_key = f"{prefix.rstrip('/')}/year={timestamp.split('/')[0]}/month={timestamp.split('/')[1]}/day={timestamp.split('/')[2]}/hour={timestamp.split('/')[3]}/batch_{batch_num}_{int(time.time())}.jsonl"
+    
+    # Prepare batch data as JSONL (JSON Lines)
+    batch_data = []
+    for idx, record in enumerate(batch_records):
+        # Filter only valid features
+        filtered_record = {k: str(v) for k, v in record.items() if k in feature_definitions}
+        
+        if filtered_record:  # Only add if we have valid features
+            # Add EventTime if not present
+            if 'EventTime' not in filtered_record:
+                filtered_record['EventTime'] = str(int(time.time()))
+            
+            batch_data.append(json.dumps(filtered_record, ensure_ascii=False))
+            batch_results.append({
+                'record_id': f'batch_{batch_num}_record_{idx+1}',
+                'status': 'success'
+            })
+        else:
+            batch_results.append({
+                'record_id': f'batch_{batch_num}_record_{idx+1}',
+                'error': 'No valid features found'
+            })
+    
+    if batch_data:
+        # Upload to S3
+        batch_content = '\n'.join(batch_data)
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=batch_key,
+            Body=batch_content.encode('utf-8'),
+            ContentType='application/x-ndjson'
+        )
+        
+        click.echo(f"S3 업로드 완료: s3://{bucket_name}/{batch_key}")
+    
+    return batch_results
