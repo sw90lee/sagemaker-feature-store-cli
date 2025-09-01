@@ -26,6 +26,7 @@ AWS SageMaker FeatureStore Online/Offline 스토어를 관리하기 위한 명�
 
 ## 설치
 
+
 ### PyPI에서 설치 (패키지가 게시된 경우)
 
 ```bash
@@ -47,6 +48,11 @@ pip install -e .
 ## 사용법
 
 ### 기본 명령어 구조
+
+```bash
+fs batch-update mlops-datascience-feature-store-acpoc-faccw-a-cm2e-421  --column Origin_time  --transform-function extract_time_prefix    --source-column Filename     --prefix-pattern "(\d{14})"     --time-format auto     --to-iso --no-dry-run --deduplicate
+
+```
 
 ```bash
 fs [--profile PROFILE] [--region REGION] COMMAND [OPTIONS]
