@@ -21,7 +21,8 @@ class SageMakerFeatureStoreUpdater:
     def __init__(self, 
                  feature_group_name: str,
                  config,
-                 batch_size: int = 1000):
+                 batch_size: int = 1000,
+                 deduplicate: bool = True):
         """
         초기화
         
@@ -29,10 +30,12 @@ class SageMakerFeatureStoreUpdater:
             feature_group_name: Feature Group 이름
             config: CLI 설정 객체
             batch_size: 배치 처리 크기
+            deduplicate: 중복 레코드 제거 여부
         """
         self.feature_group_name = feature_group_name
         self.region_name = config.region
         self.batch_size = batch_size
+        self.deduplicate = deduplicate
         
         # AWS 클라이언트 초기화
         self.session = config.session
@@ -175,7 +178,9 @@ class SageMakerFeatureStoreUpdater:
                              column_name: str, 
                              old_value: str = None,
                              value_mapping: Dict = None,
-                             conditional_mapping: Dict = None) -> Dict:
+                             conditional_mapping: Dict = None,
+                             transform_function: Callable = None,
+                             filter_conditions: Optional[Dict] = None) -> Dict:
         """변경 대상 레코드 수 계산"""
         click.echo(f"변경 대상 레코드 수 계산 중... (컬럼: {column_name})")
         
@@ -183,38 +188,90 @@ class SageMakerFeatureStoreUpdater:
         result_counts = {'total_files': len(parquet_files), 'match_counts': {}}
         
         # 필요한 컬럼들 결정
-        required_columns = [column_name]
+        required_columns = []
+        
+        # 변환 함수인 경우 소스 컬럼도 포함
+        if transform_function:
+            if hasattr(transform_function, 'source_column') and transform_function.source_column:
+                required_columns.append(transform_function.source_column)
+            
+            # 새로운 컬럼인 경우를 고려해서 기존 컬럼이 있으면 포함
+            try:
+                sample_df = pd.read_parquet(self.get_offline_data_paths()[0], nrows=1, engine='fastparquet')
+                if column_name in sample_df.columns:
+                    required_columns.append(column_name)
+            except:
+                pass
+        else:
+            required_columns = [column_name]
+        
         if conditional_mapping:
             for condition_col in conditional_mapping.keys():
                 if condition_col not in required_columns:
                     required_columns.append(condition_col)
         
+        # 필터 조건 컬럼도 포함
+        if filter_conditions:
+            for filter_col in filter_conditions.keys():
+                if filter_col not in required_columns:
+                    required_columns.append(filter_col)
+        
         def count_in_file(file_path: str) -> Dict:
             try:
-                df = pd.read_parquet(file_path, columns=required_columns, engine='fastparquet')
+                # 변환 함수의 경우 모든 컬럼 읽기 (required_columns가 비어있을 수 있음)
+                if transform_function and not required_columns:
+                    df = pd.read_parquet(file_path, engine='fastparquet')
+                else:
+                    df = pd.read_parquet(file_path, columns=required_columns, engine='fastparquet')
                 
                 file_counts = {}
                 
-                if old_value is not None:
+                # 공통 필터 조건 적용
+                base_mask = pd.Series([True] * len(df), index=df.index)
+                if filter_conditions:
+                    for filter_col, filter_val in filter_conditions.items():
+                        if filter_col in df.columns:
+                            base_mask = base_mask & (df[filter_col] == filter_val)
+                
+                if transform_function:
+                    # 변환 함수의 경우 전체 레코드 수 반환
+                    total_count = base_mask.sum()
+                    file_counts['transform_function'] = total_count
+                    
+                elif old_value is not None:
                     # 단일 값 매칭
-                    count = len(df[df[column_name] == old_value])
-                    file_counts[old_value] = count
+                    if column_name in df.columns:
+                        mask = base_mask & (df[column_name] == old_value)
+                        count = mask.sum()
+                        file_counts[old_value] = count
+                    else:
+                        file_counts[old_value] = 0
                     
                 elif value_mapping:
                     # 매핑 파일 기반
-                    for old_val in value_mapping.keys():
-                        count = len(df[df[column_name] == old_val])
-                        if count > 0:
-                            file_counts[old_val] = count
+                    if column_name in df.columns:
+                        for old_val in value_mapping.keys():
+                            mask = base_mask & (df[column_name] == old_val)
+                            count = mask.sum()
+                            if count > 0:
+                                file_counts[old_val] = count
+                    else:
+                        for old_val in value_mapping.keys():
+                            file_counts[old_val] = 0
                             
                 elif conditional_mapping:
                     # 조건부 매핑
                     for condition_col, condition_mappings in conditional_mapping.items():
+                        if condition_col not in df.columns:
+                            continue
                         for condition_val, value_map in condition_mappings.items():
-                            condition_mask = df[condition_col] == condition_val
+                            condition_mask = base_mask & (df[condition_col] == condition_val)
                             for old_val in value_map.keys():
-                                mask = condition_mask & (df[column_name] == old_val)
-                                count = mask.sum()
+                                if column_name in df.columns:
+                                    mask = condition_mask & (df[column_name] == old_val)
+                                    count = mask.sum()
+                                else:
+                                    count = condition_mask.sum()  # 새 컬럼인 경우 조건만 적용
                                 if count > 0:
                                     key = f"{condition_col}={condition_val}, {column_name}={old_val}"
                                     file_counts[key] = count
@@ -304,6 +361,10 @@ class SageMakerFeatureStoreUpdater:
                 
                 # 데이터프레임 복사 (변경 추적용)
                 df_updated = df.copy() if not dry_run else df
+                
+                # 중복 record_id 처리: EventTime 기준으로 최신 레코드만 유지 (선택적)
+                if self.deduplicate:
+                    df_updated = self._deduplicate_by_latest_event_time(df_updated)
                 
                 # 1. 단일 값 변경
                 if old_value is not None and new_value is not None:
@@ -706,6 +767,44 @@ class SageMakerFeatureStoreUpdater:
         else:
             raise ValueError(f"지원하지 않는 변환 타입: {transform_type}")
     
+    def _deduplicate_by_latest_event_time(self, df: pd.DataFrame) -> pd.DataFrame:
+        """중복된 record_id 중 EventTime 기준으로 최신 레코드만 유지"""
+        # record_id 컬럼 찾기 (대소문자 구분 없이)
+        record_id_cols = [col for col in df.columns if col.lower() in ['record_identifier_value', 'recordidentifiervalue', 'record_id', 'recordid']]
+        
+        # EventTime 컬럼 찾기 (대소문자 구분 없이)
+        event_time_cols = [col for col in df.columns if col.lower() in ['eventtime', 'event_time', 'time']]
+        
+        if not record_id_cols or not event_time_cols:
+            # 중복 제거에 필요한 컬럼이 없으면 원본 반환
+            return df
+        
+        record_id_col = record_id_cols[0]
+        event_time_col = event_time_cols[0]
+        
+        try:
+            # EventTime을 datetime으로 변환
+            df_temp = df.copy()
+            df_temp[event_time_col + '_parsed'] = pd.to_datetime(df_temp[event_time_col], errors='coerce')
+            
+            # record_id별로 최신 EventTime을 가진 레코드만 유지
+            latest_records = df_temp.loc[df_temp.groupby(record_id_col)[event_time_col + '_parsed'].idxmax()]
+            
+            # 임시 컬럼 제거
+            latest_records = latest_records.drop(columns=[event_time_col + '_parsed'])
+            
+            original_count = len(df)
+            deduplicated_count = len(latest_records)
+            
+            if original_count > deduplicated_count:
+                click.echo(f"  중복 제거: {original_count:,} -> {deduplicated_count:,} 레코드 ({original_count - deduplicated_count:,}개 중복 제거)")
+            
+            return latest_records
+            
+        except Exception as e:
+            click.echo(f"  중복 제거 처리 중 오류: {e}", err=True)
+            return df
+
     def _update_event_time(self, df, mask):
         """EventTime 자동 업데이트 (기존 시간에서 10초 추가)"""
         # EventTime 컬럼 찾기 (대소문자 구분 없이)
@@ -781,14 +880,16 @@ def batch_update(config, feature_group_name: str, column_name: str,
                 transform_type: str = None, transform_options: dict = None,
                 dry_run: bool = True, skip_validation: bool = False,
                 filter_column: str = None, filter_value: str = None,
-                cleanup_backups: bool = False, batch_size: int = 1000):
+                cleanup_backups: bool = False, batch_size: int = 1000,
+                deduplicate: bool = True):
     """배치 업데이트 실행"""
     try:
         # Feature Store 업데이터 초기화
         updater = SageMakerFeatureStoreUpdater(
             feature_group_name=feature_group_name,
             config=config,
-            batch_size=batch_size
+            batch_size=batch_size,
+            deduplicate=deduplicate
         )
         
         # 데이터 구조 확인
@@ -823,30 +924,33 @@ def batch_update(config, feature_group_name: str, column_name: str,
         elif transform_type:
             transform_function = updater.create_transform_function(transform_type, **(transform_options or {}))
         
+        # 추가 필터 조건 설정
+        filter_conditions = None
+        if filter_column and filter_value:
+            filter_conditions = {filter_column: filter_value}
+        
         # 변경 대상 레코드 수 확인
+        click.echo("=== 변경 대상 레코드 수 계산 ===")
+        count_result = updater.count_matching_records(
+            column_name=column_name,
+            old_value=old_value,
+            value_mapping=value_mapping,
+            conditional_mapping=conditional_map,
+            transform_function=transform_function,
+            filter_conditions=filter_conditions
+        )
+        
+        total_target_count = sum(count_result['match_counts'].values())
+        
         if transform_function:
-            click.echo("=== 변환 함수 기반 업데이트 ===")
-            total_target_count = "변환 함수 적용 대상"
-        elif column_name in sample_df.columns:  # 기존 컬럼인 경우에만 레코드 수 계산
-            click.echo("=== 변경 대상 레코드 수 계산 ===")
-            count_result = updater.count_matching_records(
-                column_name=column_name,
-                old_value=old_value,
-                value_mapping=value_mapping,
-                conditional_mapping=conditional_map
-            )
-            
-            total_target_count = sum(count_result['match_counts'].values())
-            if total_target_count == 0:
-                click.echo("변경 대상 레코드가 없습니다", err=True)
-                return
-        else:
-            click.echo("=== 새 컬럼 생성 모드 ===")
-            total_target_count = "전체 레코드"
+            click.echo(f"변환 함수 '{transform_type}' 적용 대상: {total_target_count:,}개 레코드")
+        elif total_target_count == 0:
+            click.echo("변경 대상 레코드가 없습니다", err=True)
+            return
         
         # 사용자 확인
         if not dry_run:
-            click.echo(f"\n⚠️ 주의: {total_target_count}개의 레코드가 변경됩니다!")
+            click.echo(f"\n⚠️ 주의: {total_target_count:,}개의 레코드가 변경됩니다!")
             click.echo(f"컬럼: {column_name}")
             
             if old_value and new_value:
@@ -858,14 +962,12 @@ def batch_update(config, feature_group_name: str, column_name: str,
             elif transform_type:
                 click.echo(f"변환 함수: {transform_type}")
             
+            if filter_conditions:
+                click.echo(f"필터 조건: {filter_conditions}")
+            
             if not click.confirm("계속하시겠습니까?"):
                 click.echo("작업이 취소되었습니다")
                 return
-        
-        # 추가 필터 조건 설정
-        filter_conditions = None
-        if filter_column and filter_value:
-            filter_conditions = {filter_column: filter_value}
         
         # 업데이트 실행
         click.echo("=== 레코드 업데이트 실행 ===")

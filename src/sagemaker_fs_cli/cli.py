@@ -155,9 +155,10 @@ def bulk_put_records(ctx, feature_group_name: str, input_file: str, output_file:
 @click.option('--force', is_flag=True, help='확인 없이 즉시 삭제')
 @click.option('--backup-s3', help='삭제 전 S3 백업 경로')
 @click.option('--dry-run', is_flag=True, help='실제 삭제 없이 계획만 확인')
+@click.option('--deduplicate-only', is_flag=True, help='삭제 대신 중복된 record_id만 제거 (EventTime 기준 최신만 유지)')
 @click.pass_context
 def clear_feature_group(ctx, feature_group_name: str, online_only: bool, offline_only: bool, 
-                       force: bool, backup_s3: Optional[str], dry_run: bool):
+                       force: bool, backup_s3: Optional[str], dry_run: bool, deduplicate_only: bool):
     """피처 그룹의 모든 데이터 삭제
     
     \b
@@ -180,6 +181,12 @@ def clear_feature_group(ctx, feature_group_name: str, online_only: bool, offline
       
       # 계획만 확인 (실제 삭제 없음)
       fs clear my-feature-group --dry-run
+      
+      # 중복된 record_id만 제거 (삭제하지 않음)
+      fs clear my-feature-group --deduplicate-only
+      
+      # 중복 제거 미리보기
+      fs clear my-feature-group --deduplicate-only --dry-run
     """
     if online_only and offline_only:
         click.echo("--online-only와 --offline-only 옵션을 동시에 사용할 수 없습니다.", err=True)
@@ -187,7 +194,7 @@ def clear_feature_group(ctx, feature_group_name: str, online_only: bool, offline
     
     config = ctx.obj['config']
     clear_cmd.clear_feature_group(config, feature_group_name, online_only, offline_only, 
-                                 force, backup_s3, dry_run)
+                                 force, backup_s3, dry_run, deduplicate_only)
 
 
 @cli.command('migrate')
@@ -449,6 +456,7 @@ def schema_command(ctx, feature_group_name: str, output_format: str, template: b
 @click.option('--filter-value', help='추가 필터 값')
 @click.option('--cleanup-backups', is_flag=True, help='백업 파일 자동 정리')
 @click.option('--batch-size', default=1000, help='배치 크기 (기본값: 1000)')
+@click.option('--deduplicate/--no-deduplicate', default=True, help='중복 record_id 제거 (EventTime 기준 최신만 유지, 기본값: True)')
 @click.pass_context
 def batch_update_feature_store(ctx, feature_group_name: str, column: str,
                               old_value: Optional[str], new_value: Optional[str],
@@ -459,7 +467,7 @@ def batch_update_feature_store(ctx, feature_group_name: str, column: str,
                               time_format: str, to_iso: bool,
                               dry_run: bool, no_dry_run: bool, skip_validation: bool,
                               filter_column: Optional[str], filter_value: Optional[str],
-                              cleanup_backups: bool, batch_size: int):
+                              cleanup_backups: bool, batch_size: int, deduplicate: bool):
     """피처 그룹의 오프라인 스토어 데이터를 대량으로 업데이트
     
     다양한 업데이트 방식을 지원합니다:
@@ -499,6 +507,7 @@ def batch_update_feature_store(ctx, feature_group_name: str, column: str,
       - 실제 변경을 위해서는 --no-dry-run 플래그를 사용하세요
       - 변경 전 자동으로 백업이 생성됩니다
       - 대용량 데이터의 경우 시간이 오래 걸릴 수 있습니다
+      - 기본적으로 중복된 record_id의 경우 EventTime 기준 최신 레코드만 업데이트됩니다
     """
     # dry-run 로직 처리
     if no_dry_run:
@@ -587,7 +596,8 @@ def batch_update_feature_store(ctx, feature_group_name: str, column: str,
         filter_column=filter_column,
         filter_value=filter_value,
         cleanup_backups=cleanup_backups,
-        batch_size=batch_size
+        batch_size=batch_size,
+        deduplicate=deduplicate
     )
 
 
