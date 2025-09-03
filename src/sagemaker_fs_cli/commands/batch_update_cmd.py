@@ -197,11 +197,21 @@ class SageMakerFeatureStoreUpdater:
         """변경 대상 레코드 수 계산"""
         click.echo(f"변경 대상 레코드 수 계산 중... (컬럼: {column_name})")
         
-        # null 값만 필터링하는 경우 Athena 쿼리 사용
+        # null 값만 필터링하는 경우
         if filter_null_only:
-            return self._count_null_records_with_athena(column_name, filter_conditions)
-        
-        parquet_files = self.get_offline_data_paths()
+            # transform_function이 있으면 Parquet 파일 직접 처리 (복잡한 로직 때문)
+            if transform_function:
+                # Athena로 null 값 있는 파일만 찾고, Parquet에서 상세 카운팅
+                parquet_files = self._get_target_files_for_null_update(column_name, filter_conditions)
+                if not parquet_files:
+                    return {'total_files': 0, 'match_counts': {}}
+                # 아래 일반 카운팅 로직으로 계속 진행 (parquet_files 이미 필터링됨)
+            else:
+                # 단순 null 카운팅은 Athena로
+                return self._count_null_records_with_athena(column_name, filter_conditions)
+        else:
+            # 일반적인 경우 모든 파일 처리
+            parquet_files = self.get_offline_data_paths()
         result_counts = {'total_files': len(parquet_files), 'match_counts': {}, 'failed_files': [], 'failed_details': []}
         
         # 필요한 컬럼들 결정
@@ -570,21 +580,25 @@ class SageMakerFeatureStoreUpdater:
                     }
                 
                 if not dry_run:
-                    # 백업 생성
-                    backup_path = file_path.replace('.parquet', f'_backup_{int(time.time())}.parquet')
+                    # 로컬 백업 생성 (S3에는 업로드하지 않음)
+                    timestamp = int(time.time())
+                    local_backup_dir = os.path.join(os.getcwd(), 'backups')
+                    os.makedirs(local_backup_dir, exist_ok=True)
                     
-                    # S3에서 백업 복사
-                    copy_source = {
-                        'Bucket': self.bucket_name,
-                        'Key': file_path.replace(f's3://{self.bucket_name}/', '')
-                    }
-                    backup_key = backup_path.replace(f's3://{self.bucket_name}/', '')
+                    # 파일명에서 S3 경로 추출해서 로컬 파일명 생성
+                    file_key = file_path.replace(f's3://{self.bucket_name}/', '')
+                    safe_filename = file_key.replace('/', '_').replace('.parquet', f'_backup_{timestamp}.parquet')
+                    backup_path = os.path.join(local_backup_dir, safe_filename)
                     
-                    self.s3_client.copy_object(
-                        CopySource=copy_source,
-                        Bucket=self.bucket_name,
-                        Key=backup_key
-                    )
+                    # S3에서 원본 파일을 로컬 백업으로 다운로드
+                    try:
+                        self.s3_client.download_file(
+                            self.bucket_name, 
+                            file_key, 
+                            backup_path
+                        )
+                    except Exception as e:
+                        click.echo(f"⚠️ 백업 생성 실패 (계속 진행): {e}", err=True)
                     
                     # 업데이트된 파일 저장
                     df_updated.to_parquet(file_path, engine='fastparquet', index=False)
@@ -670,7 +684,7 @@ class SageMakerFeatureStoreUpdater:
                 click.echo(f"  - {failed_file}")
             
             # 실패한 파일 목록을 현재 디렉토리에 저장
-            failed_files_data = self._save_failed_files_report(results['failed_details'], feature_group_name, column_name)
+            failed_files_data = self._save_failed_files_report(results['failed_details'], self.feature_group_name, column_name)
             if failed_files_data:
                 click.echo(f"상세한 실패 리포트가 저장되었습니다: {failed_files_data}")
         
@@ -1419,32 +1433,82 @@ class SageMakerFeatureStoreUpdater:
                 click.echo(f"  EventTime 업데이트 중 오류: {e}", err=True)
     
     def cleanup_backup_files(self, backup_files: List[str], confirm: bool = False) -> Dict:
-        """백업 파일 정리"""
+        """백업 파일 정리 (로컬 백업용 - 현재는 사용 안함)"""
         if not confirm:
             click.echo("백업 파일 정리를 위해서는 confirm=True로 설정하세요")
             return {'status': 'skipped', 'message': 'confirmation required'}
         
-        click.echo(f"백업 파일 {len(backup_files)}개 삭제 중...")
+        click.echo(f"로컬 백업 파일 {len(backup_files)}개 삭제 중...")
         
         deleted_count = 0
         failed_count = 0
         
-        with click.progressbar(backup_files, label='백업 파일 삭제') as bar:
-            for backup_file in bar:
-                try:
-                    key = backup_file.replace(f's3://{self.bucket_name}/', '')
-                    self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
+        for backup_file in backup_files:
+            try:
+                if os.path.exists(backup_file):
+                    os.remove(backup_file)
                     deleted_count += 1
-                except Exception as e:
-                    click.echo(f"백업 파일 삭제 실패 {backup_file}: {e}", err=True)
-                    failed_count += 1
+            except Exception as e:
+                click.echo(f"로컬 백업 파일 삭제 실패 {backup_file}: {e}", err=True)
+                failed_count += 1
         
-        click.echo(f"백업 파일 정리 완료: 삭제 {deleted_count}, 실패 {failed_count}")
+        click.echo(f"로컬 백업 파일 정리 완료: 삭제 {deleted_count}, 실패 {failed_count}")
         return {
             'status': 'completed',
             'deleted_count': deleted_count,
             'failed_count': failed_count
         }
+    
+    def cleanup_s3_backup_files(self, confirm: bool = False) -> Dict:
+        """S3에 있는 모든 _backup_ 파일들 정리"""
+        if not confirm:
+            click.echo("S3 백업 파일 정리를 위해서는 confirm=True로 설정하세요")
+            return {'status': 'skipped', 'message': 'confirmation required'}
+        
+        click.echo("S3에서 _backup_ 파일들 검색 중...")
+        
+        # S3에서 _backup_ 파일들 찾기
+        backup_files = []
+        paginator = self.s3_client.get_paginator('list_objects_v2')
+        
+        try:
+            pages = paginator.paginate(Bucket=self.bucket_name, Prefix=self.prefix)
+            
+            for page in pages:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        if '_backup_' in obj['Key'] and obj['Key'].endswith('.parquet'):
+                            backup_files.append(obj['Key'])
+            
+            if not backup_files:
+                click.echo("S3에서 _backup_ 파일을 찾을 수 없습니다")
+                return {'status': 'completed', 'deleted_count': 0, 'failed_count': 0}
+            
+            click.echo(f"발견된 S3 백업 파일 수: {len(backup_files):,}")
+            
+            # 삭제 진행
+            deleted_count = 0
+            failed_count = 0
+            
+            with click.progressbar(backup_files, label='S3 백업 파일 삭제') as bar:
+                for backup_key in bar:
+                    try:
+                        self.s3_client.delete_object(Bucket=self.bucket_name, Key=backup_key)
+                        deleted_count += 1
+                    except Exception as e:
+                        click.echo(f"S3 백업 파일 삭제 실패 {backup_key}: {e}", err=True)
+                        failed_count += 1
+            
+            click.echo(f"S3 백업 파일 정리 완료: 삭제 {deleted_count}, 실패 {failed_count}")
+            return {
+                'status': 'completed',
+                'deleted_count': deleted_count,
+                'failed_count': failed_count
+            }
+            
+        except Exception as e:
+            click.echo(f"S3 백업 파일 목록 조회 실패: {e}", err=True)
+            return {'status': 'error', 'message': str(e)}
 
 
 def batch_update(config, feature_group_name: str, column_name: str, 
@@ -1577,14 +1641,22 @@ def batch_update(config, feature_group_name: str, column_name: str,
             click.echo(f"새 값 '{new_value}' 레코드 수: {new_validation.get('actual_count', 'N/A')}")
         
         # 백업 파일 정리
-        if cleanup_backups and update_results['backup_files'] and not dry_run:
+        if cleanup_backups and not dry_run:
             click.echo("=== 백업 파일 정리 ===")
-            if click.confirm(f"{len(update_results['backup_files'])}개의 백업 파일을 삭제하시겠습니까?"):
-                cleanup_result = updater.cleanup_backup_files(
-                    update_results['backup_files'], 
-                    confirm=True
-                )
-                click.echo(f"백업 파일 정리: {cleanup_result}")
+            
+            # 로컬 백업 파일 정리
+            if update_results['backup_files']:
+                if click.confirm(f"로컬 백업 파일 {len(update_results['backup_files'])}개를 삭제하시겠습니까?"):
+                    cleanup_result = updater.cleanup_backup_files(
+                        update_results['backup_files'], 
+                        confirm=True
+                    )
+                    click.echo(f"로컬 백업 파일 정리: {cleanup_result}")
+            
+            # S3 백업 파일 정리
+            if click.confirm("S3에 있는 모든 _backup_ 파일들을 삭제하시겠습니까? (주의: 되돌릴 수 없습니다)"):
+                s3_cleanup_result = updater.cleanup_s3_backup_files(confirm=True)
+                click.echo(f"S3 백업 파일 정리: {s3_cleanup_result}")
         
         # 총 소요 시간 계산 및 출력
         end_time = time.time()
