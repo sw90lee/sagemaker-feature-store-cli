@@ -136,7 +136,19 @@ class SageMakerFeatureStoreUpdater:
             return sample_df
             
         except Exception as e:
-            click.echo(f"샘플 데이터 읽기 실패: {e}", err=True)
+            click.echo(f"❌ 샘플 데이터 읽기 실패: {parquet_files[0]}", err=True)
+            click.echo(f"   오류 유형: {type(e).__name__}", err=True)
+            click.echo(f"   오류 메시지: {str(e)}", err=True)
+            
+            if "parquet" in str(e).lower():
+                click.echo("   → Parquet 파일 형식 오류", err=True)
+            elif "s3" in str(e).lower():
+                click.echo("   → S3 접근 권한 또는 네트워크 문제", err=True)
+            elif "engine" in str(e).lower():
+                click.echo("   → Parquet 엔진 문제 (pyarrow 또는 fastparquet 설치 확인)", err=True)
+            elif "memory" in str(e).lower():
+                click.echo("   → 메모리 부족", err=True)
+            
             raise
     
     def load_mapping_from_file(self, mapping_file: str) -> Dict:
@@ -180,12 +192,17 @@ class SageMakerFeatureStoreUpdater:
                              value_mapping: Dict = None,
                              conditional_mapping: Dict = None,
                              transform_function: Callable = None,
-                             filter_conditions: Optional[Dict] = None) -> Dict:
+                             filter_conditions: Optional[Dict] = None,
+                             filter_null_only: bool = False) -> Dict:
         """변경 대상 레코드 수 계산"""
         click.echo(f"변경 대상 레코드 수 계산 중... (컬럼: {column_name})")
         
+        # null 값만 필터링하는 경우 Athena 쿼리 사용
+        if filter_null_only:
+            return self._count_null_records_with_athena(column_name, filter_conditions)
+        
         parquet_files = self.get_offline_data_paths()
-        result_counts = {'total_files': len(parquet_files), 'match_counts': {}}
+        result_counts = {'total_files': len(parquet_files), 'match_counts': {}, 'failed_files': [], 'failed_details': []}
         
         # 필요한 컬럼들 결정
         required_columns = []
@@ -220,9 +237,21 @@ class SageMakerFeatureStoreUpdater:
             try:
                 # 변환 함수의 경우 모든 컬럼 읽기 (required_columns가 비어있을 수 있음)
                 if transform_function and not required_columns:
-                    df = pd.read_parquet(file_path, engine='fastparquet')
+                    try:
+                        df = pd.read_parquet(file_path, engine='fastparquet')
+                    except ImportError:
+                        try:
+                            df = pd.read_parquet(file_path, engine='pyarrow')
+                        except ImportError:
+                            df = pd.read_parquet(file_path)
                 else:
-                    df = pd.read_parquet(file_path, columns=required_columns, engine='fastparquet')
+                    try:
+                        df = pd.read_parquet(file_path, columns=required_columns, engine='fastparquet')
+                    except ImportError:
+                        try:
+                            df = pd.read_parquet(file_path, columns=required_columns, engine='pyarrow')
+                        except ImportError:
+                            df = pd.read_parquet(file_path, columns=required_columns)
                 
                 file_counts = {}
                 
@@ -279,8 +308,27 @@ class SageMakerFeatureStoreUpdater:
                 return file_counts
                 
             except Exception as e:
-                click.echo(f"파일 읽기 오류 {file_path}: {e}", err=True)
-                return {}
+                click.echo(f"❌ 파일 읽기 실패: {file_path}", err=True)
+                click.echo(f"   오류 유형: {type(e).__name__}", err=True)
+                click.echo(f"   오류 메시지: {str(e)}", err=True)
+                if "columns" in str(e).lower():
+                    click.echo(f"   요청한 컬럼: {required_columns}", err=True)
+                    click.echo("   → 파일에 해당 컬럼이 없을 수 있습니다", err=True)
+                elif "parquet" in str(e).lower():
+                    click.echo("   → 파일이 손상되었거나 Parquet 형식이 아닐 수 있습니다", err=True)
+                elif "permission" in str(e).lower() or "access" in str(e).lower():
+                    click.echo("   → 파일 접근 권한 문제일 수 있습니다", err=True)
+                elif "memory" in str(e).lower():
+                    click.echo("   → 메모리 부족 문제일 수 있습니다", err=True)
+                
+                # 실패 정보 저장 (count_matching_records용)
+                return {
+                    'error': True,
+                    'file_path': file_path,
+                    'error_type': type(e).__name__,
+                    'error_message': str(e),
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
         
         # 병렬 처리로 각 파일의 매칭 레코드 수 계산
         max_workers = min(os.cpu_count(), 10)
@@ -291,11 +339,21 @@ class SageMakerFeatureStoreUpdater:
                 for future in as_completed(futures):
                     file_counts = future.result()
                     
-                    # 결과 집계
-                    for key, count in file_counts.items():
-                        if key not in result_counts['match_counts']:
-                            result_counts['match_counts'][key] = 0
-                        result_counts['match_counts'][key] += count
+                    # 오류인 경우 실패 정보 저장
+                    if isinstance(file_counts, dict) and file_counts.get('error', False):
+                        result_counts['failed_files'].append(file_counts['file_path'])
+                        result_counts['failed_details'].append({
+                            'file': file_counts['file_path'],
+                            'error_type': file_counts['error_type'],
+                            'error': file_counts['error_message'],
+                            'timestamp': file_counts['timestamp']
+                        })
+                    else:
+                        # 정상 결과 집계
+                        for key, count in file_counts.items():
+                            if key not in result_counts['match_counts']:
+                                result_counts['match_counts'][key] = 0
+                            result_counts['match_counts'][key] += count
                     
                     bar.update(1)
         
@@ -309,6 +367,14 @@ class SageMakerFeatureStoreUpdater:
                 if count > 0:
                     click.echo(f"  - {key}: {count:,}개")
         
+        # 분석 중 실패한 파일이 있으면 리포트 저장
+        if result_counts['failed_files']:
+            click.echo(f"파일 분석 중 실패한 파일: {len(result_counts['failed_files'])}개")
+            failed_report = self._save_failed_files_report(result_counts['failed_details'], 
+                                                         self.feature_group_name, column_name)
+            if failed_report:
+                click.echo(f"실패한 파일 분석 리포트가 저장되었습니다: {failed_report}")
+        
         return result_counts
     
     def update_records_batch(self,
@@ -319,7 +385,8 @@ class SageMakerFeatureStoreUpdater:
                            conditional_mapping: Dict = None,
                            transform_function: Callable = None,
                            dry_run: bool = True,
-                           filter_conditions: Optional[Dict] = None) -> Dict:
+                           filter_conditions: Optional[Dict] = None,
+                           filter_null_only: bool = False) -> Dict:
         """레코드 대량 업데이트"""
         click.echo(f"배치 업데이트 시작:")
         click.echo(f"  컬럼: {column_name}")
@@ -334,24 +401,36 @@ class SageMakerFeatureStoreUpdater:
             click.echo(f"  함수 기반 변환: 사용자 정의 함수")
         
         click.echo(f"  DRY RUN: {dry_run}")
+        click.echo(f"  NULL 값만 필터링: {filter_null_only}")
         
         if filter_conditions:
             click.echo(f"  추가 필터: {filter_conditions}")
         
-        parquet_files = self.get_offline_data_paths()
+        # null 값만 필터링하는 경우 Athena로 대상 파일 목록 획득
+        if filter_null_only:
+            parquet_files = self._get_target_files_for_null_update(column_name, filter_conditions)
+        else:
+            parquet_files = self.get_offline_data_paths()
         results = {
             'total_files': len(parquet_files),
             'processed_files': 0,
             'updated_records': 0,
             'failed_files': [],
+            'failed_details': [],  # 실패 상세 정보 저장용
             'backup_files': []
         }
         
         def process_file(file_path: str) -> Dict:
             """단일 파일 처리"""
             try:
-                # 파일 읽기
-                df = pd.read_parquet(file_path, engine='fastparquet')
+                # 파일 읽기 (여러 엔진 시도)
+                try:
+                    df = pd.read_parquet(file_path, engine='fastparquet')
+                except ImportError:
+                    try:
+                        df = pd.read_parquet(file_path, engine='pyarrow')
+                    except ImportError:
+                        df = pd.read_parquet(file_path)
                 original_count = len(df)
                 total_update_count = 0
                 
@@ -368,7 +447,11 @@ class SageMakerFeatureStoreUpdater:
                 
                 # 1. 단일 값 변경
                 if old_value is not None and new_value is not None:
-                    mask = df[column_name] == old_value
+                    if filter_null_only:
+                        # null 값만 대상으로 하는 경우
+                        mask = df[column_name].isnull()
+                    else:
+                        mask = df[column_name] == old_value
                     
                     # 추가 필터 조건 적용
                     if filter_conditions:
@@ -387,7 +470,11 @@ class SageMakerFeatureStoreUpdater:
                 # 2. 매핑 기반 변경
                 elif value_mapping:
                     for old_val, new_val in value_mapping.items():
-                        mask = df[column_name] == old_val
+                        if filter_null_only:
+                            # null 값만 대상으로 하는 경우
+                            mask = df[column_name].isnull()
+                        else:
+                            mask = df[column_name] == old_val
                         
                         # 추가 필터 조건 적용
                         if filter_conditions:
@@ -413,7 +500,11 @@ class SageMakerFeatureStoreUpdater:
                             condition_mask = df[condition_col] == condition_val
                             
                             for old_val, new_val in value_map.items():
-                                mask = condition_mask & (df[column_name] == old_val)
+                                if filter_null_only:
+                                    # null 값만 대상으로 하는 경우
+                                    mask = condition_mask & df[column_name].isnull()
+                                else:
+                                    mask = condition_mask & (df[column_name] == old_val)
                                 
                                 # 추가 필터 조건 적용
                                 if filter_conditions:
@@ -431,7 +522,11 @@ class SageMakerFeatureStoreUpdater:
                 
                 # 4. 변환 함수 기반
                 elif transform_function:
-                    mask = pd.Series([True] * len(df), index=df.index)
+                    if filter_null_only:
+                        # null 값만 대상으로 하는 경우
+                        mask = df[column_name].isnull() if column_name in df.columns else pd.Series([True] * len(df), index=df.index)
+                    else:
+                        mask = pd.Series([True] * len(df), index=df.index)
                     
                     # 추가 필터 조건 적용
                     if filter_conditions:
@@ -510,13 +605,34 @@ class SageMakerFeatureStoreUpdater:
                     }
                     
             except Exception as e:
-                click.echo(f"파일 처리 오류 {file_path}: {e}", err=True)
+                click.echo(f"❌ 파일 처리 실패: {file_path}", err=True)
+                click.echo(f"   오류 유형: {type(e).__name__}", err=True)
+                click.echo(f"   오류 메시지: {str(e)}", err=True)
+                
+                # 상세한 오류 분석
+                if "parquet" in str(e).lower():
+                    click.echo("   → Parquet 파일 읽기 오류 (파일 손상 또는 형식 문제)", err=True)
+                elif "columns" in str(e).lower() or "column" in str(e).lower():
+                    click.echo(f"   → 컬럼 관련 오류 (대상 컬럼: {column_name})", err=True)
+                elif "memory" in str(e).lower():
+                    click.echo("   → 메모리 부족 오류", err=True)
+                elif "s3" in str(e).lower():
+                    click.echo("   → S3 접근 오류 (권한 또는 네트워크 문제)", err=True)
+                elif "permission" in str(e).lower() or "access" in str(e).lower():
+                    click.echo("   → 파일 접근 권한 오류", err=True)
+                elif "timeout" in str(e).lower():
+                    click.echo("   → 네트워크 타임아웃 오류", err=True)
+                else:
+                    click.echo("   → 기타 알 수 없는 오류", err=True)
+                
                 return {
                     'file': file_path,
                     'status': 'error',
                     'error': str(e),
+                    'error_type': type(e).__name__,
                     'original_count': 0,
-                    'updated_count': 0
+                    'updated_count': 0,
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
         
         # 병렬 처리
@@ -536,6 +652,7 @@ class SageMakerFeatureStoreUpdater:
                             results['backup_files'].append(file_result['backup_path'])
                     elif file_result['status'] == 'error':
                         results['failed_files'].append(file_result['file'])
+                        results['failed_details'].append(file_result)  # 상세 정보도 저장
                     
                     bar.update(1)
         
@@ -551,6 +668,11 @@ class SageMakerFeatureStoreUpdater:
             click.echo("실패한 파일 목록:")
             for failed_file in results['failed_files'][:10]:
                 click.echo(f"  - {failed_file}")
+            
+            # 실패한 파일 목록을 현재 디렉토리에 저장
+            failed_files_data = self._save_failed_files_report(results['failed_details'], feature_group_name, column_name)
+            if failed_files_data:
+                click.echo(f"상세한 실패 리포트가 저장되었습니다: {failed_files_data}")
         
         return results
     
@@ -796,14 +918,465 @@ class SageMakerFeatureStoreUpdater:
             original_count = len(df)
             deduplicated_count = len(latest_records)
             
-            if original_count > deduplicated_count:
-                click.echo(f"  중복 제거: {original_count:,} -> {deduplicated_count:,} 레코드 ({original_count - deduplicated_count:,}개 중복 제거)")
+            # 중복 제거 로그 제거 - 너무 많이 나와서 보기 힘듬
             
             return latest_records
             
         except Exception as e:
-            click.echo(f"  중복 제거 처리 중 오류: {e}", err=True)
+            # 중복 제거 오류 로그도 제거
             return df
+    
+    def _count_null_records_with_athena(self, column_name: str, filter_conditions: Optional[Dict] = None) -> Dict:
+        """Athena를 사용해서 null 값 레코드 수 계산"""
+        click.echo(f"Athena로 null 값 레코드 수 계산: {column_name}")
+        
+        if not self.table_name:
+            click.echo("Glue 테이블 정보를 찾을 수 없습니다. 기본 방식으로 처리합니다.", err=True)
+            # 기본 방식으로 fallback
+            parquet_files = self.get_offline_data_paths()
+            return {'total_files': len(parquet_files), 'match_counts': {}}
+        
+        # WHERE 절 조건 구성
+        where_conditions = [f"{column_name} IS NULL"]
+        
+        if filter_conditions:
+            for filter_col, filter_val in filter_conditions.items():
+                where_conditions.append(f"{filter_col} = '{filter_val}'")
+        
+        where_clause = " AND ".join(where_conditions)
+        
+        # Athena 쿼리 작성
+        query = f"""
+        SELECT COUNT(*) as null_record_count
+        FROM "{self.database_name}"."{self.table_name}"
+        WHERE {where_clause}
+        """
+        
+        try:
+            # Athena 쿼리 실행
+            response = self.athena_client.start_query_execution(
+                QueryString=query,
+                QueryExecutionContext={'Database': self.database_name},
+                ResultConfiguration={
+                    'OutputLocation': f's3://{self.bucket_name}/athena-query-results/'
+                }
+            )
+            
+            query_execution_id = response['QueryExecutionId']
+            click.echo(f"Athena 쿼리 실행 ID: {query_execution_id}")
+            
+            # 쿼리 완료 대기
+            max_wait_time = 300  # 5분
+            wait_interval = 5
+            elapsed_time = 0
+            
+            while elapsed_time < max_wait_time:
+                response = self.athena_client.get_query_execution(
+                    QueryExecutionId=query_execution_id
+                )
+                
+                status = response['QueryExecution']['Status']['State']
+                
+                if status == 'SUCCEEDED':
+                    break
+                elif status in ['FAILED', 'CANCELLED']:
+                    error_msg = response['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+                    click.echo(f"Athena 쿼리 실패: {error_msg}", err=True)
+                    # 기본 방식으로 fallback
+                    parquet_files = self.get_offline_data_paths()
+                    return {'total_files': len(parquet_files), 'match_counts': {}}
+                
+                time.sleep(wait_interval)
+                elapsed_time += wait_interval
+            
+            if elapsed_time >= max_wait_time:
+                click.echo("Athena 쿼리 타임아웃. 기본 방식으로 처리합니다.", err=True)
+                # 기본 방식으로 fallback
+                parquet_files = self.get_offline_data_paths()
+                return {'total_files': len(parquet_files), 'match_counts': {}}
+            
+            # 결과 가져오기
+            result = self.athena_client.get_query_results(
+                QueryExecutionId=query_execution_id
+            )
+            
+            # 결과 파싱
+            rows = result['ResultSet']['Rows']
+            if len(rows) >= 2:  # 헤더 + 데이터
+                null_count = int(rows[1]['Data'][0]['VarCharValue'])
+                
+                click.echo(f"Athena 결과: null 값 레코드 {null_count:,}개")
+                
+                return {
+                    'total_files': 0,  # Athena 사용시에는 파일 수 불확정
+                    'match_counts': {'null_values': null_count}
+                }
+            else:
+                click.echo("Athena 쿼리 결과가 비어있습니다. 기본 방식으로 처리합니다.", err=True)
+                # 기본 방식으로 fallback
+                parquet_files = self.get_offline_data_paths()
+                return {'total_files': len(parquet_files), 'match_counts': {}}
+                
+        except Exception as e:
+            click.echo(f"Athena 쿼리 실행 실패: {e}. 기본 방식으로 처리합니다.", err=True)
+            # 기본 방식으로 fallback
+            parquet_files = self.get_offline_data_paths()
+            return {'total_files': len(parquet_files), 'match_counts': {}}
+    
+    def get_null_records_with_athena(self, column_name: str, filter_conditions: Optional[Dict] = None) -> List[Dict]:
+        """Athena를 사용해서 null 값이 있는 레코드의 정보 가져오기 (record_id와 파일 위치)"""
+        click.echo(f"Athena로 null 값 레코드 정보 조회: {column_name}")
+        
+        if not self.table_name:
+            click.echo("Glue 테이블 정보를 찾을 수 없습니다", err=True)
+            return []
+        
+        # record_id 컬럼 이름 추정 (일반적인 이름들)
+        record_id_candidates = ['record_identifier_value', 'recordidentifiervalue', 'record_id', 'recordid']
+        
+        # WHERE 절 조건 구성
+        where_conditions = [f"{column_name} IS NULL"]
+        
+        if filter_conditions:
+            for filter_col, filter_val in filter_conditions.items():
+                where_conditions.append(f"{filter_col} = '{filter_val}'")
+        
+        where_clause = " AND ".join(where_conditions)
+        
+        # 레코드 식별자 컬럼을 찾기 위한 쿼리 (샘플)
+        sample_query = f"""
+        SELECT * FROM "{self.database_name}"."{self.table_name}"
+        LIMIT 1
+        """
+        
+        try:
+            # 먼저 샘플 쿼리로 컬럼명 확인
+            response = self.athena_client.start_query_execution(
+                QueryString=sample_query,
+                QueryExecutionContext={'Database': self.database_name},
+                ResultConfiguration={
+                    'OutputLocation': f's3://{self.bucket_name}/athena-query-results/'
+                }
+            )
+            
+            query_execution_id = response['QueryExecutionId']
+            
+            # 쿼리 완료 대기
+            max_wait_time = 60
+            wait_interval = 2
+            elapsed_time = 0
+            
+            while elapsed_time < max_wait_time:
+                response = self.athena_client.get_query_execution(
+                    QueryExecutionId=query_execution_id
+                )
+                
+                status = response['QueryExecution']['Status']['State']
+                
+                if status == 'SUCCEEDED':
+                    break
+                elif status in ['FAILED', 'CANCELLED']:
+                    click.echo("컬럼 정보 조회 실패", err=True)
+                    return []
+                
+                time.sleep(wait_interval)
+                elapsed_time += wait_interval
+            
+            # 컬럼 정보 가져오기
+            result = self.athena_client.get_query_results(
+                QueryExecutionId=query_execution_id
+            )
+            
+            # 헤더에서 record_id 컬럼 찾기
+            record_id_column = None
+            if result['ResultSet']['Rows']:
+                headers = [col['VarCharValue'] for col in result['ResultSet']['Rows'][0]['Data']]
+                for candidate in record_id_candidates:
+                    if candidate.lower() in [h.lower() for h in headers]:
+                        record_id_column = candidate
+                        break
+                
+                # 정확한 이름 찾기
+                if not record_id_column:
+                    for header in headers:
+                        if 'record' in header.lower() and 'id' in header.lower():
+                            record_id_column = header
+                            break
+            
+            if not record_id_column:
+                click.echo("Record ID 컬럼을 찾을 수 없습니다", err=True)
+                return []
+            
+            click.echo(f"Record ID 컬럼 발견: {record_id_column}")
+            
+            # 실제 null 값 레코드 조회 쿼리
+            records_query = f"""
+            SELECT {record_id_column}, "$path" as file_path
+            FROM "{self.database_name}"."{self.table_name}"
+            WHERE {where_clause}
+            LIMIT 10000
+            """
+            
+            # null 값 레코드 조회 실행
+            response = self.athena_client.start_query_execution(
+                QueryString=records_query,
+                QueryExecutionContext={'Database': self.database_name},
+                ResultConfiguration={
+                    'OutputLocation': f's3://{self.bucket_name}/athena-query-results/'
+                }
+            )
+            
+            query_execution_id = response['QueryExecutionId']
+            click.echo(f"null 값 레코드 조회 실행 ID: {query_execution_id}")
+            
+            # 쿼리 완료 대기
+            max_wait_time = 300
+            wait_interval = 5
+            elapsed_time = 0
+            
+            while elapsed_time < max_wait_time:
+                response = self.athena_client.get_query_execution(
+                    QueryExecutionId=query_execution_id
+                )
+                
+                status = response['QueryExecution']['Status']['State']
+                
+                if status == 'SUCCEEDED':
+                    break
+                elif status in ['FAILED', 'CANCELLED']:
+                    error_msg = response['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+                    click.echo(f"null 값 레코드 조회 실패: {error_msg}", err=True)
+                    return []
+                
+                time.sleep(wait_interval)
+                elapsed_time += wait_interval
+            
+            if elapsed_time >= max_wait_time:
+                click.echo("null 값 레코드 조회 타임아웃", err=True)
+                return []
+            
+            # 결과 가져오기
+            result = self.athena_client.get_query_results(
+                QueryExecutionId=query_execution_id
+            )
+            
+            null_records = []
+            rows = result['ResultSet']['Rows']
+            
+            # 헤더 스킵하고 데이터 파싱
+            for row in rows[1:]:  # 첫 번째 행은 헤더
+                data = row['Data']
+                if len(data) >= 2:
+                    record_id = data[0].get('VarCharValue')
+                    file_path = data[1].get('VarCharValue')
+                    
+                    if record_id and file_path:
+                        null_records.append({
+                            'record_id': record_id,
+                            'file_path': file_path
+                        })
+            
+            click.echo(f"null 값 레코드 {len(null_records)}개 발견")
+            return null_records
+                
+        except Exception as e:
+            click.echo(f"null 값 레코드 조회 실패: {e}", err=True)
+            return []
+    
+    def _get_target_files_for_null_update(self, column_name: str, filter_conditions: Optional[Dict] = None) -> List[str]:
+        """null 값 업데이트를 위한 대상 파일 목록 조회"""
+        click.echo(f"null 값이 있는 파일 목록 조회: {column_name}")
+        
+        if not self.table_name:
+            click.echo("Glue 테이블 정보가 없어 모든 파일을 대상으로 처리합니다", err=True)
+            return self.get_offline_data_paths()
+        
+        # WHERE 절 조건 구성
+        where_conditions = [f"{column_name} IS NULL"]
+        
+        if filter_conditions:
+            for filter_col, filter_val in filter_conditions.items():
+                where_conditions.append(f"{filter_col} = '{filter_val}'")
+        
+        where_clause = " AND ".join(where_conditions)
+        
+        # 파일 경로별 null 값 레코드 수 조회 쿼리
+        query = f"""
+        SELECT "$path" as file_path, COUNT(*) as null_count
+        FROM "{self.database_name}"."{self.table_name}"
+        WHERE {where_clause}
+        GROUP BY "$path"
+        HAVING COUNT(*) > 0
+        ORDER BY null_count DESC
+        """
+        
+        try:
+            # Athena 쿼리 실행
+            response = self.athena_client.start_query_execution(
+                QueryString=query,
+                QueryExecutionContext={'Database': self.database_name},
+                ResultConfiguration={
+                    'OutputLocation': f's3://{self.bucket_name}/athena-query-results/'
+                }
+            )
+            
+            query_execution_id = response['QueryExecutionId']
+            click.echo(f"파일 목록 쿼리 실행 ID: {query_execution_id}")
+            
+            # 쿼리 완료 대기
+            max_wait_time = 300
+            wait_interval = 5
+            elapsed_time = 0
+            
+            while elapsed_time < max_wait_time:
+                response = self.athena_client.get_query_execution(
+                    QueryExecutionId=query_execution_id
+                )
+                
+                status = response['QueryExecution']['Status']['State']
+                
+                if status == 'SUCCEEDED':
+                    break
+                elif status in ['FAILED', 'CANCELLED']:
+                    error_msg = response['QueryExecution']['Status'].get('StateChangeReason', 'Unknown error')
+                    click.echo(f"파일 목록 쿼리 실패: {error_msg}", err=True)
+                    return self.get_offline_data_paths()
+                
+                time.sleep(wait_interval)
+                elapsed_time += wait_interval
+            
+            if elapsed_time >= max_wait_time:
+                click.echo("파일 목록 쿼리 타임아웃", err=True)
+                return self.get_offline_data_paths()
+            
+            # 결과 가져오기
+            result = self.athena_client.get_query_results(
+                QueryExecutionId=query_execution_id
+            )
+            
+            target_files = []
+            total_null_count = 0
+            rows = result['ResultSet']['Rows']
+            
+            # 헤더 스킵하고 데이터 파싱
+            for row in rows[1:]:  # 첫 번째 행은 헤더
+                data = row['Data']
+                if len(data) >= 2:
+                    file_path = data[0].get('VarCharValue')
+                    null_count = int(data[1].get('VarCharValue', 0))
+                    
+                    if file_path and null_count > 0:
+                        target_files.append(file_path)
+                        total_null_count += null_count
+            
+            click.echo(f"null 값이 있는 파일: {len(target_files)}개 (전체 null 레코드: {total_null_count:,}개)")
+            
+            if not target_files:
+                click.echo("null 값이 있는 파일이 없습니다")
+                return []
+            
+            return target_files
+                
+        except Exception as e:
+            click.echo(f"파일 목록 조회 실패: {e}", err=True)
+            return self.get_offline_data_paths()
+    
+    def _save_failed_files_report(self, failed_details: List[Dict], feature_group_name: str, column_name: str) -> str:
+        """실패한 파일들의 상세 리포트를 파일로 저장"""
+        if not failed_details:
+            return None
+        
+        try:
+            # 현재 시간으로 파일명 생성
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"failed_files_{feature_group_name}_{column_name}_{timestamp}.json"
+            
+            # 현재 작업 디렉토리에 저장
+            filepath = os.path.join(os.getcwd(), filename)
+            
+            # 리포트 데이터 구성
+            report_data = {
+                "metadata": {
+                    "feature_group": feature_group_name,
+                    "column": column_name,
+                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    "total_failed": len(failed_details)
+                },
+                "failed_files": failed_details,
+                "summary": {
+                    "error_types": {},
+                    "common_errors": []
+                }
+            }
+            
+            # 오류 유형별 통계
+            error_types = {}
+            for detail in failed_details:
+                error_type = detail.get('error_type', 'Unknown')
+                error_types[error_type] = error_types.get(error_type, 0) + 1
+            
+            report_data["summary"]["error_types"] = error_types
+            
+            # 공통 오류 패턴 분석
+            common_patterns = []
+            for detail in failed_details:
+                error_msg = str(detail.get('error', '')).lower()
+                if 'parquet' in error_msg:
+                    common_patterns.append('Parquet format issue')
+                elif 'column' in error_msg:
+                    common_patterns.append('Column not found')
+                elif 's3' in error_msg or 'access' in error_msg:
+                    common_patterns.append('S3 access issue')
+                elif 'memory' in error_msg:
+                    common_patterns.append('Memory issue')
+                elif 'timeout' in error_msg:
+                    common_patterns.append('Timeout issue')
+            
+            # 공통 패턴 중복 제거
+            report_data["summary"]["common_errors"] = list(set(common_patterns))
+            
+            # JSON 파일로 저장
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(report_data, f, indent=2, ensure_ascii=False)
+            
+            # 간단한 텍스트 버전도 저장
+            txt_filename = f"failed_files_{feature_group_name}_{column_name}_{timestamp}.txt"
+            txt_filepath = os.path.join(os.getcwd(), txt_filename)
+            
+            with open(txt_filepath, 'w', encoding='utf-8') as f:
+                f.write(f"=== 실패한 파일 리포트 ===\n")
+                f.write(f"Feature Group: {feature_group_name}\n")
+                f.write(f"Column: {column_name}\n")
+                f.write(f"생성 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"총 실패 파일: {len(failed_details)}개\n\n")
+                
+                f.write("=== 오류 유형별 통계 ===\n")
+                for error_type, count in error_types.items():
+                    f.write(f"{error_type}: {count}개\n")
+                f.write("\n")
+                
+                if common_patterns:
+                    f.write("=== 주요 오류 패턴 ===\n")
+                    for pattern in set(common_patterns):
+                        f.write(f"- {pattern}\n")
+                    f.write("\n")
+                
+                f.write("=== 실패한 파일 상세 목록 ===\n")
+                for i, detail in enumerate(failed_details, 1):
+                    f.write(f"{i}. {detail['file']}\n")
+                    f.write(f"   오류 유형: {detail.get('error_type', 'Unknown')}\n")
+                    f.write(f"   오류 메시지: {detail.get('error', 'No message')}\n")
+                    f.write(f"   시간: {detail.get('timestamp', 'Unknown')}\n")
+                    f.write("\n")
+            
+            click.echo(f"JSON 리포트: {filepath}")
+            click.echo(f"텍스트 리포트: {txt_filepath}")
+            
+            return f"{filename} (JSON), {txt_filename} (TXT)"
+            
+        except Exception as e:
+            click.echo(f"실패 리포트 저장 중 오류: {e}", err=True)
+            return None
 
     def _update_event_time(self, df, mask):
         """EventTime 자동 업데이트 (기존 시간에서 10초 추가)"""
@@ -831,16 +1404,16 @@ class SageMakerFeatureStoreUpdater:
                             # 현재 시간 사용 (파싱 실패시)
                             dt = datetime.now()
                         
-                        # 10초 추가
-                        new_time = dt + timedelta(seconds=10)
+                        # 5초 추가
+                        new_time = dt + timedelta(seconds=5)
                         df.loc[idx, event_time_col] = new_time.strftime('%Y-%m-%dT%H:%M:%SZ')
                         
                     except:
-                        # 파싱 실패시 현재 시간 + 10초 사용
-                        new_time = datetime.now() + timedelta(seconds=10)
+                        # 파싱 실패시 현재 시간 + 5초 사용
+                        new_time = datetime.now() + timedelta(seconds=5)
                         df.loc[idx, event_time_col] = new_time.strftime('%Y-%m-%dT%H:%M:%SZ')
                         
-                click.echo(f"  EventTime 컬럼 '{event_time_col}'을 자동 업데이트했습니다 (+10초)")
+                # 로그 제거 - 너무 많이 나와서 보기 힘듬
                 
             except Exception as e:
                 click.echo(f"  EventTime 업데이트 중 오류: {e}", err=True)
@@ -880,9 +1453,11 @@ def batch_update(config, feature_group_name: str, column_name: str,
                 transform_type: str = None, transform_options: dict = None,
                 dry_run: bool = True, skip_validation: bool = False,
                 filter_column: str = None, filter_value: str = None,
+                filter_null_only: bool = False,
                 cleanup_backups: bool = False, batch_size: int = 1000,
                 deduplicate: bool = True):
     """배치 업데이트 실행"""
+    start_time = time.time()  # 시작 시간 기록
     try:
         # Feature Store 업데이터 초기화
         updater = SageMakerFeatureStoreUpdater(
@@ -937,7 +1512,8 @@ def batch_update(config, feature_group_name: str, column_name: str,
             value_mapping=value_mapping,
             conditional_mapping=conditional_map,
             transform_function=transform_function,
-            filter_conditions=filter_conditions
+            filter_conditions=filter_conditions,
+            filter_null_only=filter_null_only
         )
         
         total_target_count = sum(count_result['match_counts'].values())
@@ -979,7 +1555,8 @@ def batch_update(config, feature_group_name: str, column_name: str,
             conditional_mapping=conditional_map,
             transform_function=transform_function,
             dry_run=dry_run,
-            filter_conditions=filter_conditions
+            filter_conditions=filter_conditions,
+            filter_null_only=filter_null_only
         )
         
         # Athena 검증
@@ -1009,10 +1586,24 @@ def batch_update(config, feature_group_name: str, column_name: str,
                 )
                 click.echo(f"백업 파일 정리: {cleanup_result}")
         
+        # 총 소요 시간 계산 및 출력
+        end_time = time.time()
+        duration = end_time - start_time
+        duration_minutes = int(duration // 60)
+        duration_seconds = int(duration % 60)
+        
         click.echo("=== 작업 완료 ===")
+        if duration_minutes > 0:
+            click.echo(f"총 소요 시간: {duration_minutes}분 {duration_seconds}초")
+        else:
+            click.echo(f"총 소요 시간: {duration_seconds}초")
         
     except KeyboardInterrupt:
-        click.echo("작업이 사용자에 의해 중단되었습니다")
+        end_time = time.time()
+        duration = end_time - start_time
+        click.echo(f"작업이 사용자에 의해 중단되었습니다 (소요 시간: {int(duration)}초)")
     except Exception as e:
-        click.echo(f"작업 중 오류 발생: {e}", err=True)
+        end_time = time.time()
+        duration = end_time - start_time
+        click.echo(f"작업 중 오류 발생: {e} (소요 시간: {int(duration)}초)", err=True)
         raise

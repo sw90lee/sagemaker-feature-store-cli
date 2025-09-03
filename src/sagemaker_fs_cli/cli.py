@@ -454,6 +454,7 @@ def schema_command(ctx, feature_group_name: str, output_format: str, template: b
 @click.option('--skip-validation', is_flag=True, help='Athena 검증 건너뛰기')
 @click.option('--filter-column', help='추가 필터 컬럼명')
 @click.option('--filter-value', help='추가 필터 값')
+@click.option('--filter-null-only', is_flag=True, help='지정된 컬럼의 null 값만 업데이트 (성능 최적화)')
 @click.option('--cleanup-backups', is_flag=True, help='백업 파일 자동 정리')
 @click.option('--batch-size', default=1000, help='배치 크기 (기본값: 1000)')
 @click.option('--deduplicate/--no-deduplicate', default=True, help='중복 record_id 제거 (EventTime 기준 최신만 유지, 기본값: True)')
@@ -467,6 +468,7 @@ def batch_update_feature_store(ctx, feature_group_name: str, column: str,
                               time_format: str, to_iso: bool,
                               dry_run: bool, no_dry_run: bool, skip_validation: bool,
                               filter_column: Optional[str], filter_value: Optional[str],
+                              filter_null_only: bool,
                               cleanup_backups: bool, batch_size: int, deduplicate: bool):
     """피처 그룹의 오프라인 스토어 데이터를 대량으로 업데이트
     
@@ -501,6 +503,9 @@ def batch_update_feature_store(ctx, feature_group_name: str, column: str,
       # 필터 조건 적용
       fs batch-update my-fg --column status --old-value "old" --new-value "new" \\
         --filter-column region --filter-value "us-east-1" --no-dry-run
+      
+      # null 값만 업데이트 (성능 최적화)
+      fs batch-update my-fg --column status --new-value "default" --filter-null-only --no-dry-run
     
     ⚠️ 주의사항:
       - 기본적으로 --dry-run 모드로 실행됩니다
@@ -595,6 +600,7 @@ def batch_update_feature_store(ctx, feature_group_name: str, column: str,
         skip_validation=skip_validation,
         filter_column=filter_column,
         filter_value=filter_value,
+        filter_null_only=filter_null_only,
         cleanup_backups=cleanup_backups,
         batch_size=batch_size,
         deduplicate=deduplicate
