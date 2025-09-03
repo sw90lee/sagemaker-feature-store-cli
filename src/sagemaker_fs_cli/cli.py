@@ -432,7 +432,7 @@ def schema_command(ctx, feature_group_name: str, output_format: str, template: b
         add_features_cmd.show_schema(feature_group_name, output_format)
 
 
-@cli.command('batch-update')
+@cli.command('bulk-update')
 @click.argument('feature_group_name')
 @click.option('--column', required=True, help='업데이트할 컬럼명')
 @click.option('--old-value', help='변경할 기존 값 (단일 값 변경용)')
@@ -459,7 +459,7 @@ def schema_command(ctx, feature_group_name: str, output_format: str, template: b
 @click.option('--batch-size', default=1000, help='배치 크기 (기본값: 1000)')
 @click.option('--deduplicate/--no-deduplicate', default=True, help='중복 record_id 제거 (EventTime 기준 최신만 유지, 기본값: True)')
 @click.pass_context
-def batch_update_feature_store(ctx, feature_group_name: str, column: str,
+def bulk_update_feature_store(ctx, feature_group_name: str, column: str,
                               old_value: Optional[str], new_value: Optional[str],
                               mapping_file: Optional[str], conditional_mapping: Optional[str],
                               transform_function: Optional[str], regex_pattern: Optional[str], 
@@ -472,47 +472,160 @@ def batch_update_feature_store(ctx, feature_group_name: str, column: str,
                               cleanup_backups: bool, batch_size: int, deduplicate: bool):
     """피처 그룹의 오프라인 스토어 데이터를 대량으로 업데이트
     
-    다양한 업데이트 방식을 지원합니다:
+    SageMaker Feature Store의 오프라인 스토어(S3 Parquet 파일)에서 특정 컬럼 값을 
+    효율적으로 대량 업데이트하는 명령어입니다. Athena 쿼리를 통한 최적화된 처리와 
+    다양한 변환 함수를 지원합니다.
+
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║                           📋 업데이트 방식                            ║
+    ╚══════════════════════════════════════════════════════════════════════╝
     
     \b
-    1. 단일 값 변경:
-       fs batch-update my-fg --column status --old-value "old" --new-value "new"
+    1️⃣ 단일 값 변경:
+       fs bulk-update my-fg --column status --old-value "old" --new-value "new" --no-dry-run
     
     \b
-    2. 매핑 파일 사용:
-       fs batch-update my-fg --column status --mapping-file mapping.json
+    2️⃣ 매핑 파일 사용 (JSON/CSV):
+       fs bulk-update my-fg --column status --mapping-file mapping.json --no-dry-run
+       
+       📝 mapping.json 예시:
+       {"ABNORMAL": "NORMAL", "ERROR": "FIXED", "PENDING": "COMPLETED"}
     
     \b
-    3. 조건부 매핑:
-       fs batch-update my-fg --column status --conditional-mapping '{"category": {"A": {"old1": "new1"}}}'
+    3️⃣ 조건부 매핑 (복잡한 조건):
+       fs bulk-update my-fg --column result \\
+         --conditional-mapping '{"category": {"A": {"old": "new"}}}' --no-dry-run
     
     \b
-    예시:
-      # 단일 값 변경 (테스트)
-      fs batch-update my-fg --column RB_Result --old-value "ABNORMAL" --new-value "NORMAL"
-      
-      # 실제 변경 실행
-      fs batch-update my-fg --column RB_Result --old-value "ABNORMAL" --new-value "NORMAL" --no-dry-run
-      
-      # 매핑 파일로 여러 값 변경
-      fs batch-update my-fg --column status --mapping-file value_mapping.json --no-dry-run
-      
-      # 조건부 매핑
-      fs batch-update my-fg --column result --conditional-mapping '{"category": {"A": {"old": "new"}}}' --no-dry-run
-      
-      # 필터 조건 적용
-      fs batch-update my-fg --column status --old-value "old" --new-value "new" \\
-        --filter-column region --filter-value "us-east-1" --no-dry-run
-      
-      # null 값만 업데이트 (성능 최적화)
-      fs batch-update my-fg --column status --new-value "default" --filter-null-only --no-dry-run
+    4️⃣ 변환 함수 사용:
+       fs bulk-update my-fg --column data --transform-function uppercase --no-dry-run
+       fs bulk-update my-fg --column text --transform-function regex_replace \\
+         --regex-pattern "old_.*" --regex-replacement "new_value" --no-dry-run
+
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║                        🛠️ 변환 함수 상세 가이드                        ║
+    ╚══════════════════════════════════════════════════════════════════════╝
     
-    ⚠️ 주의사항:
-      - 기본적으로 --dry-run 모드로 실행됩니다
-      - 실제 변경을 위해서는 --no-dry-run 플래그를 사용하세요
-      - 변경 전 자동으로 백업이 생성됩니다
-      - 대용량 데이터의 경우 시간이 오래 걸릴 수 있습니다
-      - 기본적으로 중복된 record_id의 경우 EventTime 기준 최신 레코드만 업데이트됩니다
+    \b
+    🔤 extract_time_prefix - 파일명/컬럼에서 시간 정보 추출 후 ISO 변환:
+       fs bulk-update mlops-fg --column Origin_Time \\
+         --transform-function extract_time_prefix \\
+         --prefix-pattern '(\d{14})' --source-column Filename \\
+         --filter-null-only --no-dry-run
+       
+       💡 설명: Filename에서 14자리 숫자(YYYYMMDDHHMMSS)를 추출하여 
+               Origin_Time 컬럼에 ISO 형식(2024-01-15T10:30:45Z)으로 저장
+    
+    \b
+    📋 copy_from_column - 다른 컬럼에서 값 복사:
+       fs bulk-update my-fg --column target_col \\
+         --transform-function copy_from_column --source-column source_col \\
+         --filter-null-only --no-dry-run
+    
+    \b
+    🔍 regex_replace - 정규식으로 패턴 치환:
+       fs bulk-update my-fg --column text \\
+         --transform-function regex_replace \\
+         --regex-pattern "error_(\d+)" --regex-replacement "fixed_\1" --no-dry-run
+
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║                         ⚡ 성능 최적화 옵션                           ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+    
+    \b
+    🎯 --filter-null-only: null 값만 업데이트 (Athena로 대상 파일만 선별)
+       fs bulk-update my-fg --column status --new-value "default" \\
+         --filter-null-only --no-dry-run
+    
+    \b
+    🔍 --filter-column/--filter-value: 특정 조건 레코드만 대상
+       fs bulk-update my-fg --column status --old-value "old" --new-value "new" \\
+         --filter-column region --filter-value "us-east-1" --no-dry-run
+    
+    \b
+    ⚙️ --batch-size: 배치 처리 크기 조정 (기본: 1000)
+       fs bulk-update my-fg --column status --old-value "old" --new-value "new" \\
+         --batch-size 500 --no-dry-run
+
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║                      📊 실제 사용 예시 (실무)                         ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+    
+    \b
+    📅 예시 1: 파일명에서 시간 추출하여 Origin_Time 컬럼에 저장
+       fs bulk-update mlops-datascience-feature-store-acpoc-faccw-a-cm2d-421 \\
+         --column Origin_Time \\
+         --transform-function extract_time_prefix \\
+         --prefix-pattern '(\d{14})' \\
+         --source-column Filename \\
+         --filter-null-only \\
+         --no-dry-run
+       
+       💡 실제 적용: Filename이 "data_20240115103045_v1.parquet"인 경우
+                   Origin_Time에 "2024-01-15T10:30:45Z" 저장
+    
+    \b
+    🔄 예시 2: 상태 값 일괄 변경 (매핑 파일 사용)
+       fs bulk-update my-feature-group \\
+         --column RB_Result \\
+         --mapping-file status_mapping.json \\
+         --filter-null-only \\
+         --cleanup-backups \\
+         --no-dry-run
+       
+       📝 status_mapping.json:
+       {
+         "ABNORMAL": "NORMAL",
+         "ERROR": "FIXED", 
+         "PENDING": "COMPLETED",
+         "null": "DEFAULT"
+       }
+    
+    \b
+    🎯 예시 3: 특정 조건의 레코드만 업데이트
+       fs bulk-update prod-feature-group \\
+         --column status --old-value "processing" --new-value "completed" \\
+         --filter-column environment --filter-value "production" \\
+         --batch-size 2000 \\
+         --no-dry-run
+
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║                       🔧 디버깅 및 테스트                            ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+    
+    \b
+    🧪 DRY-RUN 모드 (기본): 실제 변경 없이 분석 및 예상 시간 보고서
+       fs bulk-update my-fg --column status --old-value "old" --new-value "new"
+       
+       📊 출력: 변경 대상 레코드 수, 예상 소요 시간, 세부 분석 리포트
+    
+    \b
+    🔍 실패 분석: 처리 실패한 파일에 대한 상세 리포트 자동 생성
+       failed_files_[feature-group]_[column]_[timestamp].json/txt
+
+    ╔══════════════════════════════════════════════════════════════════════╗
+    ║                           ⚠️ 중요 주의사항                            ║
+    ╚══════════════════════════════════════════════════════════════════════╝
+    
+    \b
+    🔒 안전성:
+      • 기본적으로 --dry-run 모드로 실행 (실제 변경 없음)
+      • 실제 변경은 --no-dry-run 플래그 필요
+      • 변경 전 자동 백업 생성 (로컬 backups/ 폴더)
+      • EventTime 자동 업데이트로 Feature Store 동기화
+    
+    \b
+    ⏱️ 성능:
+      • 병렬 처리 (최대 5개 워커)
+      • 중복 record_id 자동 제거 (EventTime 기준 최신만 유지)
+      • --filter-null-only로 Athena 기반 파일 선별 최적화
+      • 대용량 데이터는 백그라운드 실행 권장 (nohup, screen)
+    
+    \b
+    💾 스토리지:
+      • 백업 파일은 로컬에만 저장 (S3 비용 절약)
+      • --cleanup-backups로 S3의 기존 _backup_ 파일 정리 가능
+      • 충분한 로컬 디스크 공간 확보 필요
     """
     # dry-run 로직 처리
     if no_dry_run:
