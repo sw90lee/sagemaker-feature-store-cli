@@ -678,6 +678,10 @@ class SageMakerFeatureStoreUpdater:
         click.echo(f"실패한 파일: {len(results['failed_files'])}")
         click.echo(f"백업 파일: {len(results['backup_files'])}")
         
+        # DRY RUN 모드일 때 예상 시간 보고서 출력
+        if dry_run and results['processed_files'] > 0:
+            self._print_dry_run_time_estimate(results)
+        
         if results['failed_files']:
             click.echo("실패한 파일 목록:")
             for failed_file in results['failed_files'][:10]:
@@ -1509,6 +1513,109 @@ class SageMakerFeatureStoreUpdater:
         except Exception as e:
             click.echo(f"S3 백업 파일 목록 조회 실패: {e}", err=True)
             return {'status': 'error', 'message': str(e)}
+    
+    def _print_dry_run_time_estimate(self, results: Dict) -> None:
+        """DRY RUN 모드에서 실제 작업 시 예상 소요 시간 보고서 출력"""
+        click.echo("\n=== 📊 실제 작업 시 예상 소요 시간 보고서 ===")
+        
+        total_files = results['total_files']
+        processed_files = results['processed_files']
+        updated_records = results['updated_records']
+        failed_files = len(results['failed_files'])
+        
+        if processed_files == 0:
+            click.echo("⚠️ 처리된 파일이 없어 시간 예상이 불가능합니다.")
+            return
+        
+        # 기본 시간 계산 (경험적 수치)
+        # - 파일당 평균 처리 시간: 2-5초 (크기에 따라)
+        # - 레코드당 평균 처리 시간: 0.001초
+        # - S3 업로드 오버헤드: 파일당 1-3초
+        # - 백업 생성 시간: 파일당 0.5-2초
+        
+        avg_records_per_file = updated_records / processed_files if processed_files > 0 else 0
+        
+        # 파일 크기별 예상 시간 (레코드 수 기준)
+        if avg_records_per_file < 100:
+            base_time_per_file = 2  # 작은 파일
+            backup_time_per_file = 0.5
+            upload_time_per_file = 1
+        elif avg_records_per_file < 1000:
+            base_time_per_file = 3  # 중간 파일
+            backup_time_per_file = 1
+            upload_time_per_file = 1.5
+        elif avg_records_per_file < 10000:
+            base_time_per_file = 4  # 큰 파일
+            backup_time_per_file = 1.5
+            upload_time_per_file = 2
+        else:
+            base_time_per_file = 5  # 매우 큰 파일
+            backup_time_per_file = 2
+            upload_time_per_file = 3
+        
+        # 병렬 처리 고려 (기본적으로 5개 워커)
+        max_workers = min(os.cpu_count(), 5)
+        
+        # 실제 처리할 파일 수 (실패 파일 제외)
+        successful_files = processed_files - failed_files
+        
+        # 총 예상 시간 계산
+        total_processing_time = successful_files * base_time_per_file
+        total_backup_time = successful_files * backup_time_per_file  
+        total_upload_time = successful_files * upload_time_per_file
+        
+        # 병렬 처리로 인한 시간 단축
+        parallel_processing_time = total_processing_time / max_workers
+        parallel_backup_time = total_backup_time / max_workers
+        parallel_upload_time = total_upload_time / max_workers
+        
+        # 총 예상 시간 (순차적이 아닌 병렬)
+        estimated_total_seconds = max(parallel_processing_time, parallel_backup_time) + parallel_upload_time
+        
+        # 여유 시간 추가 (네트워크 지연, 예상치 못한 오버헤드)
+        estimated_total_seconds *= 1.3
+        
+        # 시간 포맷팅
+        hours = int(estimated_total_seconds // 3600)
+        minutes = int((estimated_total_seconds % 3600) // 60)
+        seconds = int(estimated_total_seconds % 60)
+        
+        click.echo(f"📋 분석 기준:")
+        click.echo(f"  • 성공 파일: {successful_files:,}개")
+        click.echo(f"  • 실패 파일: {failed_files:,}개")
+        click.echo(f"  • 업데이트 레코드: {updated_records:,}개")
+        click.echo(f"  • 파일당 평균 레코드 수: {avg_records_per_file:.1f}개")
+        click.echo(f"  • 병렬 워커 수: {max_workers}개")
+        
+        click.echo(f"\n⏱️ 예상 소요 시간:")
+        if hours > 0:
+            click.echo(f"  총 소요 시간: {hours}시간 {minutes}분 {seconds}초")
+        elif minutes > 0:
+            click.echo(f"  총 소요 시간: {minutes}분 {seconds}초")
+        else:
+            click.echo(f"  총 소요 시간: {seconds}초")
+        
+        click.echo(f"\n📊 세부 예상 시간 (병렬 처리 기준):")
+        click.echo(f"  • 데이터 처리: {int(parallel_processing_time // 60)}분 {int(parallel_processing_time % 60)}초")
+        click.echo(f"  • 백업 생성: {int(parallel_backup_time // 60)}분 {int(parallel_backup_time % 60)}초") 
+        click.echo(f"  • S3 업로드: {int(parallel_upload_time // 60)}분 {int(parallel_upload_time % 60)}초")
+        
+        # 주의사항
+        click.echo(f"\n⚠️ 주의사항:")
+        click.echo(f"  • 실제 시간은 파일 크기, 네트워크 상태, S3 성능에 따라 달라질 수 있습니다")
+        click.echo(f"  • 백업 파일은 로컬에 저장되므로 충분한 디스크 공간이 필요합니다")
+        if updated_records > 100000:
+            click.echo(f"  • 대용량 데이터({updated_records:,}개 레코드)이므로 시간이 오래 걸릴 수 있습니다")
+        
+        # 권장사항
+        click.echo(f"\n💡 권장사항:")
+        if estimated_total_seconds > 1800:  # 30분 이상
+            click.echo(f"  • 작업 시간이 오래 예상되므로 백그라운드에서 실행하는 것을 권장합니다")
+            click.echo(f"  • nohup이나 screen을 사용하여 세션이 끊어져도 계속 실행되도록 하세요")
+        if successful_files > 1000:
+            click.echo(f"  • 파일 수가 많으므로({successful_files:,}개) 배치 크기 조정을 고려해보세요")
+        if failed_files > 0:
+            click.echo(f"  • {failed_files}개 파일이 실패했으므로 실제 실행 전에 원인을 확인해주세요")
 
 
 def batch_update(config, feature_group_name: str, column_name: str, 
