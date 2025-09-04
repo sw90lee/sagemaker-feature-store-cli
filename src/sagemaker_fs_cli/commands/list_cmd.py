@@ -38,8 +38,13 @@ def list_feature_groups(config: Config, output_format: str) -> None:
                         offline_s3_uri = offline_config.get('S3StorageConfig', {}).get('S3Uri', 'Not configured') if offline_config else 'Not configured'
                         offline_table_format = offline_config.get('TableFormat', 'Glue') if offline_config else 'N/A'
                         
-                        # Find corresponding Athena table if offline store is enabled
-                        athena_table = _find_athena_table(config, fg['FeatureGroupName']) if offline_config else 'N/A'
+                        # Get actual Athena table from offline store config
+                        athena_table = 'N/A'
+                        if offline_config and 'DataCatalogConfig' in offline_config:
+                            catalog_config = offline_config['DataCatalogConfig']
+                            database = catalog_config.get('Database', 'sagemaker_featurestore')
+                            table_name = catalog_config.get('TableName', 'N/A')
+                            athena_table = f"{database}.{table_name}" if table_name != 'N/A' else 'N/A'
                         
                         # Determine ingest mode based on store configuration
                         ingest_mode = []
@@ -86,49 +91,3 @@ def list_feature_groups(config: Config, output_format: str) -> None:
         raise click.Abort()
 
 
-def _find_athena_table(config: Config, feature_group_name: str, database: str = 'sagemaker_featurestore') -> str:
-    """Feature Group에 대응하는 Athena 테이블 이름 찾기"""
-    try:
-        athena_client = config.session.client('athena')
-        
-        # 가능한 테이블 이름 패턴들
-        try:
-            account_id = config.session.client('sts').get_caller_identity()['Account']
-        except:
-            account_id = ''
-            
-        table_name_patterns = [
-            feature_group_name.replace('-', '_'),
-            feature_group_name.lower().replace('-', '_'),
-            f"{feature_group_name.replace('-', '_')}_{account_id}",
-            f"{feature_group_name.lower().replace('-', '_')}_{account_id}"
-        ]
-        
-        # 실제 테이블 목록 조회
-        try:
-            response = athena_client.list_table_metadata(
-                CatalogName='AwsDataCatalog',
-                DatabaseName=database
-            )
-            
-            existing_tables = [table['Name'] for table in response.get('TableMetadataList', [])]
-            
-            # 정확한 매칭 먼저 시도
-            for pattern in table_name_patterns:
-                for table_name in existing_tables:
-                    if pattern.lower() == table_name.lower():
-                        return f"{database}.{table_name}"
-            
-            # 부분 매칭 시도
-            feature_group_base = feature_group_name.replace('-', '_').lower()
-            for table_name in existing_tables:
-                if feature_group_base in table_name.lower():
-                    return f"{database}.{table_name}"
-                    
-        except Exception:
-            pass
-            
-        return 'Table not found'
-        
-    except Exception:
-        return 'Unable to check'
