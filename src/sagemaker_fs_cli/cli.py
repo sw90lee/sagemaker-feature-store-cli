@@ -3,7 +3,7 @@
 import click
 from typing import Optional
 from .config import Config
-from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd, export_cmd, analyze_cmd, add_features_cmd, batch_update_cmd
+from .commands import list_cmd, get_cmd, put_cmd, bulk_get_cmd, bulk_put_cmd, clear_cmd, migrate_cmd, create_cmd, delete_cmd, export_cmd, analyze_cmd, add_features_cmd, batch_update_cmd, read_parquet_cmd
 
 
 @click.group()
@@ -553,7 +553,7 @@ def bulk_update_feature_store(ctx, feature_group_name: str, column: str,
     
     \b
     📅 예시 1: 파일명에서 시간 추출하여 Origin_Time 컬럼에 저장
-       fs bulk-update mlops-datascience-feature-store-acpoc-faccw-a-cm2d-421 \\
+       fs bulk-update s3_bucket \\
          --column Origin_Time \\
          --transform-function extract_time_prefix \\
          --prefix-pattern '(\d{14})' \\
@@ -718,6 +718,42 @@ def bulk_update_feature_store(ctx, feature_group_name: str, column: str,
         batch_size=batch_size,
         deduplicate=deduplicate
     )
+
+
+@cli.command('read-parquet')
+@click.argument('file_path')
+@click.option('--save', '-s', help='분석 결과를 저장할 파일 경로 (JSON 형식)')
+@click.pass_context
+def read_parquet_file(ctx, file_path: str, save: Optional[str]):
+    """Parquet 파일을 읽어서 상세 분석 정보를 JSON 형식으로 출력
+    
+    S3 경로와 로컬 파일 경로를 모두 지원합니다.
+    
+    \b
+    예시:
+      # S3 parquet 파일 읽기
+      fs read-parquet s3://my-bucket/data/records.parquet
+      
+      # 로컬 parquet 파일 읽기
+      fs read-parquet /path/to/local/file.parquet
+      
+      # 분석 결과를 파일로 저장
+      fs read-parquet s3://my-bucket/data/records.parquet --save analysis.json
+      
+      # 로컬 파일 분석 결과 저장
+      fs read-parquet ./data.parquet --save ./analysis_result.json
+    
+    \b
+    출력 정보:
+      • 파일 정보: 경로, 크기, 행/열 개수
+      • 스키마: 각 컬럼의 데이터 타입, null 개수, 고유값 개수
+      • Record ID 분석: 기본키 후보 컬럼들 식별 및 분석
+      • 데이터 개요: 중복 데이터, 메모리 사용량, 컬럼 분류
+      • 샘플 데이터: 처음 3개 레코드
+      • 수치 통계: 숫자형 컬럼들의 기본 통계 정보
+    """
+    config = ctx.obj['config']
+    read_parquet_cmd.read_parquet_file(config, file_path, save)
 
 
 if __name__ == '__main__':
